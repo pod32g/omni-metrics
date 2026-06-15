@@ -73,6 +73,11 @@ func NewIngester(app Appendable, sampleLimit int) *Ingester {
 // instance; nowMs stamps timestamp-less samples and the health LastPush.
 func (i *Ingester) Ingest(req *Request, remoteHost string, nowMs int64) (Result, error) {
 	if err := req.validate(); err != nil {
+		// Deliberately not recorded in the per-source health registry: a malformed
+		// request often has no stable identity (e.g. empty job), and recording
+		// every validation failure would let an attacker grow the sources map with
+		// junk job/instance keys. Aggregate validation failures remain visible via
+		// the omni_push_requests_total{status="error"} counter.
 		return Result{}, &IngestError{Kind: ErrBadData, Msg: err.Error()}
 	}
 	instance := req.Instance

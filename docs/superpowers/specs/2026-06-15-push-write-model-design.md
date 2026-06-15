@@ -293,6 +293,36 @@ After the server ships and is verified, add the client side to
 
 The JSON schema in this spec is the contract between the two repos.
 
+## Adversarial review — findings & resolutions
+
+An adversarial review (reviewer prompted to refute) ran against the implementation.
+Outcomes:
+
+**Fixed:**
+- **Cardinality-DoS via Rollback (critical).** The shared `tsdb` appender created
+  series in the head at `Append` time but `Rollback` did not release them, so an
+  over-cap (hence rolled-back) push permanently burned head cap slots while
+  writing nothing — and with `retention: 0` the reclamation loop never ran.
+  `appender.Rollback` now reclaims batch-created series that hold no samples
+  (mirroring `truncate`), fixing the push path and scrape alike.
+- **Auth scheme (high).** The token check accepted a raw `Authorization: <token>`
+  without the `Bearer ` scheme; it now requires the scheme (`strings.CutPrefix`).
+- **Whitespace-only `job` (medium).** Now rejected (`strings.TrimSpace`).
+
+**Deliberate choices (documented, not changed):**
+- **Validation failures are not recorded per-source.** A malformed request often
+  has no stable identity, and recording every failure would let an attacker grow
+  the sources map with junk keys. Aggregate failures stay visible via
+  `omni_push_requests_total{status="error"}`. Post-validation failures
+  (sample-limit, cap, commit) *are* recorded per source.
+- **`/api/v1/push/sources` is unauthenticated** (read-only health, matching the
+  other read endpoints). It does expose source IPs/job names/error text, so it is
+  a candidate to gate behind the token or scrub error text if the writer is
+  exposed publicly; deferred since the default bind is loopback.
+- **`timestamp_ms: 0` means "now"** (epoch-0 back-fill is unreachable; harmless).
+- **`"Inf"` is accepted as `+Inf`** in addition to `"+Inf"` (matches Prometheus
+  leniency).
+
 ## Deferrals
 
 - **Exposition-text and Prometheus remote-write** ingestion (remote-write remains
@@ -300,3 +330,7 @@ The JSON schema in this spec is the contract between the two repos.
 - **gzip request bodies** (`Content-Encoding: gzip`) — easy later add.
 - **Pushgateway-style replace/grouping** semantics (only append in v1).
 - **TLS / per-source tokens / rate-limiting** — single shared token only.
+- **Concurrent-rollback cap reclamation** is correct for the realistic
+  single-request case; a sub-millisecond TOCTOU window under heavy concurrent
+  creation is backstopped by the periodic `truncate` reclamation (run `retention`
+  > 0 to enable it).

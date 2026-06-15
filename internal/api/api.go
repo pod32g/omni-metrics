@@ -30,12 +30,15 @@ type TargetsProvider interface {
 
 // Options configures the API server.
 type Options struct {
-	Engine     *promql.Engine
-	Storage    StorageQ
-	Targets    TargetsProvider
-	Web        http.Handler
-	Version    string
-	HeadSeries func() int
+	Engine      *promql.Engine
+	Storage     StorageQ
+	Targets     TargetsProvider
+	Web         http.Handler
+	Version     string
+	HeadSeries  func() int
+	Push        Pusher
+	PushSources PushSourcesProvider
+	PushConfig  PushConfig
 }
 
 // API is the HTTP handler for the omni-metrics server.
@@ -64,6 +67,10 @@ func (a *API) routes() {
 	a.mux.HandleFunc("GET /api/v1/label/{name}/values", a.handleLabelValues)
 	a.mux.HandleFunc("GET /api/v1/targets", a.handleTargets)
 	a.mux.HandleFunc("GET /metrics", a.handleMetrics)
+	if a.opts.PushConfig.Enabled && a.opts.Push != nil {
+		a.mux.HandleFunc("POST /api/v1/push", a.handlePush)
+		a.mux.HandleFunc("GET /api/v1/push/sources", a.handlePushSources)
+	}
 	a.mux.HandleFunc("GET /-/healthy", a.handleHealth)
 	a.mux.HandleFunc("GET /-/ready", a.handleHealth)
 	if a.opts.Web != nil {

@@ -20,13 +20,19 @@ light themes.
   **Pushers** console view.
 - **Custom TSDB**: in-memory head with an inverted index, plus a segmented,
   CRC-checked **write-ahead log** with crash recovery (survives `kill -9`).
-- **PromQL subset**: instant & range queries, label matchers (`= != =~ !~`),
-  aggregations (`sum avg min max count` with `by`/`without`), range functions
-  (`rate irate increase`, `{sum,avg,min,max,count}_over_time`), and scalar/vector
-  arithmetic and comparison.
+- **PromQL**: instant & range queries; label matchers (`= != =~ !~`);
+  aggregations (`sum avg min max count topk bottomk quantile stddev stdvar group
+  count_values` with `by`/`without`); vector matching (`on`/`ignoring` +
+  `group_left`/`group_right`); set ops (`and`/`or`/`unless`); the `bool` modifier;
+  `offset`/`@` and subqueries; and a broad function library including
+  `rate`/`irate`/`increase`/`delta`/`deriv`/`predict_linear`, `histogram_quantile`,
+  `label_replace`/`label_join`, math, and time functions.
+- **Grafana-compatible**: works as a drop-in **Prometheus data source** — GET+POST
+  query endpoints, `status/buildinfo`, `metadata`, `match[]` label filtering, and a
+  Prometheus JSON envelope. (See [Grafana](#grafana).)
 - **Prometheus-compatible API**: `/api/v1/query`, `/query_range`, `/series`,
-  `/labels`, `/label/<name>/values`, `/targets`, and self-instrumentation at
-  `/metrics`.
+  `/labels`, `/label/<name>/values`, `/targets`, `/status/buildinfo`, `/metadata`,
+  and self-instrumentation at `/metrics`.
 - **Embedded web console**: query & graph (hand-rolled theme-aware SVG chart),
   scrape targets, and runtime status — **dark + light** from a single set of CSS
   design tokens, AA-contrast verified.
@@ -108,6 +114,20 @@ client cannot override `__name__`/`job`/`instance`. Push-source health is shown 
 the **Pushers** console page and at `GET /api/v1/push/sources`. Configure limits
 and an optional bearer token via the `push:` config block.
 
+## Grafana
+
+omni-metrics is a drop-in **Prometheus data source** for Grafana. Add a data source
+of type **Prometheus** with the URL pointing at omni (e.g. `http://localhost:9090`);
+Grafana's "Save & test" succeeds, the query builder browses metrics/labels, and
+dashboards built for Prometheus work. Verified end-to-end against Grafana with the
+real *Node Exporter Full* dashboard — all 284 of its panel queries are accepted by
+omni's PromQL engine.
+
+Make sure omni is reachable from Grafana: bind a routable address with
+`-listen 0.0.0.0:9090` when Grafana runs elsewhere (a container reaches the host via
+`http://host.docker.internal:9090`). The query endpoints accept Grafana's default
+`POST` method, so no data-source tweaks are needed.
+
 ## Architecture
 
 ```
@@ -145,6 +165,9 @@ go test ./... -race
 
 ## Roadmap (deferred from M1)
 
-M2 on-disk blocks + retention/compaction · M3 deeper PromQL + histogram quantiles ·
-M4 recording/alerting rules · M5 service discovery · M6 remote-write/federation ·
-later: auth/TLS, clustering.
+M2 on-disk blocks + retention/compaction · M4 recording/alerting rules ·
+M5 service discovery · M6 remote-write/federation · later: auth/TLS, clustering,
+native histograms.
+
+(M3 — deeper PromQL + `histogram_quantile` — is largely delivered as part of
+Grafana compatibility.)

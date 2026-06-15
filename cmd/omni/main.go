@@ -19,6 +19,7 @@ import (
 	"github.com/pod32g/omni-metrics/internal/api"
 	"github.com/pod32g/omni-metrics/internal/config"
 	"github.com/pod32g/omni-metrics/internal/promql"
+	"github.com/pod32g/omni-metrics/internal/push"
 	"github.com/pod32g/omni-metrics/internal/scrape"
 	"github.com/pod32g/omni-metrics/internal/tsdb"
 	"github.com/pod32g/omni-metrics/web"
@@ -91,6 +92,9 @@ func main() {
 	mgr := scrape.NewManager(db, 0)
 	go mgr.Run(ctx, toScrapeConfigs(cfg))
 
+	// Push ingestion: clients that cannot be scraped POST samples here.
+	ingester := push.NewIngester(db, cfg.Push.SampleLimit)
+
 	// Retention enforcement.
 	if ret := cfg.Storage.Retention.D(); ret > 0 {
 		go retentionLoop(ctx, db, ret)
@@ -98,12 +102,19 @@ func main() {
 
 	// HTTP server: API + embedded console.
 	handler := api.New(api.Options{
-		Engine:     promql.NewEngine(db),
-		Storage:    db,
-		Targets:    mgr,
-		Web:        web.Handler(),
-		Version:    version,
-		HeadSeries: db.HeadSeries,
+		Engine:      promql.NewEngine(db),
+		Storage:     db,
+		Targets:     mgr,
+		Web:         web.Handler(),
+		Version:     version,
+		HeadSeries:  db.HeadSeries,
+		Push:        ingester,
+		PushSources: ingester,
+		PushConfig: api.PushConfig{
+			Enabled:      cfg.Push.IsEnabled(),
+			MaxBodyBytes: cfg.Push.BodyLimit(),
+			AuthToken:    cfg.Push.AuthToken,
+		},
 	})
 	srv := &http.Server{
 		Addr:              cfg.Web.Listen,

@@ -73,6 +73,12 @@ func TestIngestRollsBackOnCardinalityCap(t *testing.T) {
 	if ss.Next() {
 		t.Error("rolled-back push left data behind")
 	}
+	// And the rolled-back push must not have burned the cardinality budget: the
+	// (empty) series it created up to the cap must be reclaimed (guards the
+	// push cardinality-DoS class).
+	if db.HeadSeries() != 0 {
+		t.Errorf("rolled-back over-cap push leaked %d series into the cap", db.HeadSeries())
+	}
 }
 
 func TestIngestSampleLimit(t *testing.T) {

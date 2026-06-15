@@ -220,6 +220,18 @@ func (h *head) truncate(minT int64) {
 	}
 }
 
+// reclaimIfEmpty removes the series at ref iff it currently holds no samples —
+// used by appender.Rollback to release cap slots taken by series the batch
+// created but never committed. A series that has since gained samples (e.g. a
+// concurrent committed batch) is left intact.
+func (h *head) reclaimIfEmpty(ref uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if ms := h.series[ref]; ms != nil && len(ms.samples) == 0 {
+		h.removeSeriesLocked(ref, ms)
+	}
+}
+
 // removeSeriesLocked deletes a series from all of the head's structures. Caller
 // holds mu.
 func (h *head) removeSeriesLocked(ref uint64, ms *memSeries) {

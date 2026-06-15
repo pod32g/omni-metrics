@@ -141,6 +141,69 @@ func TestCardinalityCap(t *testing.T) {
 	}
 }
 
+// TestRollbackReclaimsCreatedSeries guards the push cardinality-DoS class: a
+// rolled-back batch must not leave the series it created occupying cap slots, or
+// an over-cap (and thus rolled-back) append would permanently burn the budget.
+func TestRollbackReclaimsCreatedSeries(t *testing.T) {
+	db, _ := tsdb.Open(tsdb.Options{MaxSeries: 2})
+	defer db.Close()
+
+	app := db.Appender()
+	if _, err := app.Append(model.FromStrings(model.MetricName, "a"), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Append(model.FromStrings(model.MetricName, "b"), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if db.HeadSeries() != 0 {
+		t.Fatalf("after rollback HeadSeries = %d, want 0 (created series must be reclaimed)", db.HeadSeries())
+	}
+
+	// The whole cap must be available again for a fresh, committed batch.
+	app2 := db.Appender()
+	for _, n := range []string{"c", "d"} {
+		if _, err := app2.Append(model.FromStrings(model.MetricName, n), 1, 1); err != nil {
+			t.Fatalf("append %s after rollback: %v", n, err)
+		}
+	}
+	if err := app2.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if db.HeadSeries() != 2 {
+		t.Errorf("HeadSeries = %d, want 2", db.HeadSeries())
+	}
+}
+
+// TestRollbackKeepsCommittedSeries ensures reclamation only targets series with
+// no samples: a series that already holds committed samples must survive a later
+// appender's rollback even if that appender re-touched it.
+func TestRollbackKeepsCommittedSeries(t *testing.T) {
+	db, _ := tsdb.Open(tsdb.Options{})
+	defer db.Close()
+
+	a1 := db.Appender()
+	if _, err := a1.Append(model.FromStrings(model.MetricName, "keep"), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := a1.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	a2 := db.Appender()
+	if _, err := a2.Append(model.FromStrings(model.MetricName, "keep"), 2, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := a2.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if db.HeadSeries() != 1 {
+		t.Errorf("committed series must survive a later rollback: HeadSeries = %d, want 1", db.HeadSeries())
+	}
+}
+
 func TestConcurrentAppends(t *testing.T) {
 	db, _ := tsdb.Open(tsdb.Options{})
 	defer db.Close()

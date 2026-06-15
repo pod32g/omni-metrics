@@ -158,10 +158,15 @@ func (a *appender) Commit() error {
 	return nil
 }
 
-// Rollback discards staged samples. Note: series created during the batch remain
-// registered in the head index (but carry no samples, so they are invisible to
-// Select); this is an accepted M1 simplification.
+// Rollback discards staged samples and reclaims any series this batch created
+// that still hold no samples, releasing the cardinality-cap slots they took. This
+// guards the cardinality-DoS class: an over-cap (hence rolled-back) append must
+// not permanently burn the head's series budget. A created series that another
+// committed batch has since populated is left intact (it is no longer empty).
 func (a *appender) Rollback() error {
+	for _, s := range a.newSeries {
+		a.db.head.reclaimIfEmpty(s.ref)
+	}
 	a.newSeries = nil
 	a.pending = nil
 	return nil

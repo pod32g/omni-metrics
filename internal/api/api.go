@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"runtime"
+	"sort"
 	"strconv"
 	"time"
 
@@ -60,12 +62,21 @@ func New(opts Options) *API {
 }
 
 func (a *API) routes() {
-	a.mux.HandleFunc("GET /api/v1/query", a.handleQuery)
-	a.mux.HandleFunc("GET /api/v1/query_range", a.handleQueryRange)
-	a.mux.HandleFunc("GET /api/v1/series", a.handleSeries)
-	a.mux.HandleFunc("GET /api/v1/labels", a.handleLabels)
-	a.mux.HandleFunc("GET /api/v1/label/{name}/values", a.handleLabelValues)
+	// Read endpoints accept GET and POST — Grafana's Prometheus data source POSTs
+	// form-encoded queries by default. The handlers read params via r.FormValue,
+	// which works for both.
+	both := func(pat string, h http.HandlerFunc) {
+		a.mux.HandleFunc("GET "+pat, h)
+		a.mux.HandleFunc("POST "+pat, h)
+	}
+	both("/api/v1/query", a.handleQuery)
+	both("/api/v1/query_range", a.handleQueryRange)
+	both("/api/v1/series", a.handleSeries)
+	both("/api/v1/labels", a.handleLabels)
+	both("/api/v1/label/{name}/values", a.handleLabelValues)
 	a.mux.HandleFunc("GET /api/v1/targets", a.handleTargets)
+	a.mux.HandleFunc("GET /api/v1/status/buildinfo", a.handleBuildInfo)
+	both("/api/v1/metadata", a.handleMetadata)
 	a.mux.HandleFunc("GET /metrics", a.handleMetrics)
 	if a.opts.PushConfig.Enabled && a.opts.Push != nil {
 		a.mux.HandleFunc("POST /api/v1/push", a.handlePush)
@@ -73,6 +84,9 @@ func (a *API) routes() {
 	}
 	a.mux.HandleFunc("GET /-/healthy", a.handleHealth)
 	a.mux.HandleFunc("GET /-/ready", a.handleHealth)
+	// Unknown /api/** paths (and methods) return the Prometheus JSON error envelope
+	// rather than falling through to the SPA, which would confuse API clients.
+	a.mux.HandleFunc("/api/", a.handleAPINotFound)
 	if a.opts.Web != nil {
 		a.mux.Handle("/", a.opts.Web)
 	}
@@ -203,13 +217,86 @@ func (a *API) handleSeries(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleLabels(w http.ResponseWriter, r *http.Request) {
 	a.self.IncHTTP("labels")
-	writeData(w, a.opts.Storage.Querier().LabelNames())
+	q := a.opts.Storage.Querier()
+	matches := r.URL.Query()["match[]"]
+	if len(matches) == 0 {
+		writeData(w, q.LabelNames())
+		return
+	}
+	set := map[string]struct{}{}
+	for _, m := range matches {
+		matchers, err := promql.ParseMatchers(m)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_data", err.Error())
+			return
+		}
+		for _, n := range q.LabelNames(matchers...) {
+			set[n] = struct{}{}
+		}
+	}
+	writeData(w, sortedStringSet(set))
 }
 
 func (a *API) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	a.self.IncHTTP("label_values")
 	name := r.PathValue("name")
-	writeData(w, a.opts.Storage.Querier().LabelValues(name))
+	q := a.opts.Storage.Querier()
+	matches := r.URL.Query()["match[]"]
+	if len(matches) == 0 {
+		writeData(w, q.LabelValues(name))
+		return
+	}
+	// match[] selectors filter which series contribute values; multiple selectors
+	// union (Prometheus semantics).
+	set := map[string]struct{}{}
+	for _, m := range matches {
+		matchers, err := promql.ParseMatchers(m)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_data", err.Error())
+			return
+		}
+		for _, v := range q.LabelValues(name, matchers...) {
+			set[v] = struct{}{}
+		}
+	}
+	writeData(w, sortedStringSet(set))
+}
+
+// handleBuildInfo backs /api/v1/status/buildinfo, which Grafana probes to detect
+// the Prometheus version and gate features. We report a recent version so Grafana
+// treats omni as a modern Prometheus.
+func (a *API) handleBuildInfo(w http.ResponseWriter, r *http.Request) {
+	a.self.IncHTTP("buildinfo")
+	writeData(w, map[string]string{
+		"version":   "2.51.0",
+		"revision":  a.opts.Version,
+		"branch":    "",
+		"buildUser": "omni-metrics",
+		"buildDate": "",
+		"goVersion": runtime.Version(),
+	})
+}
+
+// handleMetadata backs /api/v1/metadata. omni does not persist scrape metadata, so
+// it returns an empty map — valid, and Grafana degrades gracefully (no type hints).
+func (a *API) handleMetadata(w http.ResponseWriter, r *http.Request) {
+	a.self.IncHTTP("metadata")
+	writeData(w, map[string][]string{})
+}
+
+// handleAPINotFound returns a Prometheus-style 404 for unknown /api/** requests.
+func (a *API) handleAPINotFound(w http.ResponseWriter, r *http.Request) {
+	a.self.IncHTTP("not_found")
+	writeError(w, http.StatusNotFound, "not_found", "unknown API path "+r.URL.Path)
+}
+
+func sortedStringSet(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for v := range set {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (a *API) handleTargets(w http.ResponseWriter, r *http.Request) {

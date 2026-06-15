@@ -391,7 +391,7 @@
           el("span", { style: "width:90px" }, ["State"]),
           el("span", { style: "width:120px" }, ["Last push"]),
           el("span", { style: "width:90px;text-align:right" }, ["Pushes"]),
-          el("span", { style: "width:110px;text-align:right" }, ["Samples"]),
+          el("span", { style: "width:110px;text-align:right;padding-right:24px" }, ["Samples"]),
           el("span", { style: "flex:1", "data-dim": "1" }, ["Error"]),
         ]),
       ]);
@@ -403,7 +403,7 @@
           el("span", { style: "width:90px" }, [okPill(fresh)]),
           el("span", { style: "width:120px" }, [s.lastPush && new Date(s.lastPush).getTime() ? ago(s.lastPush) : "–"]),
           el("span", { class: "mono", style: "width:90px;text-align:right;display:inline-block" }, [String(s.pushesTotal || 0)]),
-          el("span", { class: "mono", style: "width:110px;text-align:right;display:inline-block" }, [String(s.samplesTotal || 0)]),
+          el("span", { class: "mono", style: "width:110px;text-align:right;padding-right:24px;display:inline-block" }, [String(s.samplesTotal || 0)]),
           el("span", { style: "flex:1" }, [s.lastError || ""]),
         ]));
       });

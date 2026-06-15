@@ -72,6 +72,47 @@ func TestHistogramQuantileMonotonic(t *testing.T) {
 	}
 }
 
+// group_right mirrors group_left: the right (many) side's labels survive.
+func TestVectorMatchingGroupRight(t *testing.T) {
+	eng := promql.NewEngine(buildExtDB(t))
+	// b / on(x) group_right a : one b (=2) matched to many a's. value = b/a.
+	got := vectorMap(t, instant(t, eng, "b / on(x) group_right a", 3000))
+	if !approx(got[`{x="1",y="p"}`], 0.2) || !approx(got[`{x="1",y="q"}`], 0.1) {
+		t.Errorf("b/on(x)group_right a = %v, want p=0.2 q=0.1", got)
+	}
+}
+
+// A recording-rule colon name lexes as one metric name, and a subquery's ':'
+// (inside [r:res]) is still its own token — both must coexist.
+func TestColonMetricNameAndSubquery(t *testing.T) {
+	db, err := tsdb.Open(tsdb.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := db.Appender()
+	app.Append(model.FromStrings(model.MetricName, "node:cpu:rate5m", "x", "1"), 3000, 7)
+	if err := app.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	eng := promql.NewEngine(db)
+	if got := one(t, instant(t, eng, `node:cpu:rate5m`, 3000)); got != 7 {
+		t.Errorf("colon metric name = %v, want 7", got)
+	}
+	if got := one(t, instant(t, eng, `max_over_time(node:cpu:rate5m[1m:30s])`, 3000)); got != 7 {
+		t.Errorf("subquery on colon name = %v, want 7", got)
+	}
+}
+
+func TestMinMaxAggregation(t *testing.T) {
+	eng := promql.NewEngine(buildExtDB(t))
+	if got := one(t, instant(t, eng, "max(m)", 3000)); got != 30 {
+		t.Errorf("max(m) = %v, want 30", got)
+	}
+	if got := one(t, instant(t, eng, "min(m)", 3000)); got != 3 {
+		t.Errorf("min(m) = %v, want 3", got)
+	}
+}
+
 // timestamp() returns the sample's own timestamp, not the evaluation time.
 func TestTimestampReturnsSampleTime(t *testing.T) {
 	eng := promql.NewEngine(buildExtDB(t))

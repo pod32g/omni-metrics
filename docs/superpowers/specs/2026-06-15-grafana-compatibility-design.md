@@ -79,6 +79,31 @@ edge cases, exemplars, remote_read. Documented as deferrals.
   panels return data (no query errors). Capture evidence.
 - **Adversarial review** of PromQL correctness vs Prometheus semantics before ship.
 
+## Adversarial review — outcome
+
+A 5-dimension adversarial review (PromQL vs Prometheus semantics + API) ran after
+implementation. Confirmed findings, all fixed test-first:
+
+- **`clamp(v,min,max)` with `min>max`** now returns an empty vector (was emitting
+  the min for every series).
+- **`sort`/`sort_desc`** order finite values correctly and push `NaN` to the end
+  (the old comparator let `NaN` freeze ordering).
+- **`histogram_quantile`** repairs non-monotonic cumulative buckets (scrape-race
+  artifacts) before interpolating, as Prometheus does.
+- **`timestamp()`** reports the sample's own timestamp rather than the eval time
+  (selectInstant carries it; the instant result is normalized to eval time).
+- **`/metrics` and the health probes** return `405` + `Allow` on a wrong method
+  instead of falling through to the SPA HTML.
+
+Spot-checked and confirmed correct (review noise): `group_right`, colon
+recording-rule names coexisting with subquery `:`, `min`/`max`, set ops, topk/
+bottomk, count_values, subqueries, the `bool` modifier.
+
+**Known approximation (deferred):** `rate`/`increase`/`irate` use the sampled
+window rather than Prometheus' extrapolation to the range boundaries, so their
+values differ slightly from Prometheus. Queries still return valid rates and
+dashboards render; full extrapolation is a later refinement.
+
 ## Repo hygiene
 
 Public repo; commit identity `pod32g` (noreply), no `Co-Authored-By` trailer.

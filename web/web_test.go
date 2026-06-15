@@ -46,6 +46,23 @@ func TestPushersViewShips(t *testing.T) {
 	}
 }
 
+func TestQueryUXShips(t *testing.T) {
+	h := Handler()
+	cases := []struct{ path, want string }{
+		{"/app.js", "renderAutocomplete"}, // autocomplete wiring
+		{"/app.js", "renderEmptyQuery"},   // friendly empty-query state
+		{"/styles.css", ".ac-dropdown"},   // autocomplete dropdown styling
+		{"/styles.css", ".example-chip"},  // empty-state example chips
+	}
+	for _, tc := range cases {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if !strings.Contains(rec.Body.String(), tc.want) {
+			t.Errorf("%s: missing %q", tc.path, tc.want)
+		}
+	}
+}
+
 func TestThemeTokensPresent(t *testing.T) {
 	// Both themes must be defined for the dark/light requirement.
 	rec := httptest.NewRecorder()

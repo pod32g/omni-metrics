@@ -22,6 +22,22 @@
   var state = { query: DEFAULT_QUERY, rangeSeconds: 3600 };
   var lastResult = null;
 
+  // Autocomplete vocabulary: the supported PromQL functions/aggregations/keywords
+  // (the engine is a documented subset) plus metric and label names fetched live.
+  var PROMQL_FUNCS = [
+    { text: "rate", kind: "func" }, { text: "irate", kind: "func" }, { text: "increase", kind: "func" },
+    { text: "sum_over_time", kind: "func" }, { text: "avg_over_time", kind: "func" },
+    { text: "min_over_time", kind: "func" }, { text: "max_over_time", kind: "func" },
+    { text: "count_over_time", kind: "func" },
+    { text: "sum", kind: "agg" }, { text: "avg", kind: "agg" }, { text: "min", kind: "agg" },
+    { text: "max", kind: "agg" }, { text: "count", kind: "agg" },
+  ];
+  // by/without are only valid as a grouping clause on an aggregation, so they are
+  // suggested separately (see computeSuggestions), not in the default pool.
+  var PROMQL_KEYWORDS = [{ text: "by", kind: "kw" }, { text: "without", kind: "kw" }];
+  var AGG_BEFORE = /\b(sum|avg|min|max|count)\b\s*(\([^)]*\)\s*)?$/;
+  var acData = { metrics: [], labels: [] };
+
   /* ---------- dom helpers ---------- */
   function el(tag, attrs, children) {
     var e = document.createElement(tag);
@@ -129,8 +145,7 @@
       buildRangeControl(),
     ]));
 
-    var input = el("input", { type: "text", value: state.query, spellcheck: "false", "aria-label": "PromQL query" });
-    input.addEventListener("keydown", function (e) { if (e.key === "Enter") { state.query = input.value; runQuery(); } });
+    var input = el("input", { type: "text", value: state.query, spellcheck: "false", autocomplete: "off", "aria-label": "PromQL query" });
 
     var runBtn = el("button", { class: "run" }, [
       icon('<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5v14l11-7z"/></svg>'),
@@ -138,14 +153,21 @@
     ]);
     runBtn.addEventListener("click", function () { state.query = input.value; runQuery(); });
 
-    view.appendChild(el("div", { class: "querybar" }, [
+    var dropdown = el("div", { class: "ac-dropdown", role: "listbox" }, []);
+    dropdown.style.display = "none";
+    var queryWrap = el("div", { class: "query-wrap" }, [
       el("div", { class: "query-input" }, [
         icon('<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>'),
         input,
         el("span", { class: "kbd" }, ["⏎"]),
       ]),
-      runBtn,
-    ]));
+      dropdown,
+    ]);
+
+    view.appendChild(el("div", { class: "querybar" }, [queryWrap, runBtn]));
+
+    renderAutocomplete(input, dropdown, function () { state.query = input.value; runQuery(); });
+    loadAutocompleteData();
 
     view.appendChild(el("div", { class: "panel" }, [
       el("div", { class: "panel-head" }, [
@@ -182,6 +204,7 @@
   }
 
   function runQuery() {
+    if (!state.query || !state.query.trim()) { renderEmptyQuery(); return; }
     var end = Math.floor(Date.now() / 1000);
     var start = end - state.rangeSeconds;
     var step = Math.max(1, Math.floor(state.rangeSeconds / 120));
@@ -206,6 +229,199 @@
     var area = document.getElementById("chart-area");
     if (area) { clear(area); area.appendChild(el("div", { class: "error-banner" }, [String(err.message || err)])); }
     ["legend", "chart-meta", "instant-table"].forEach(function (id) { var n = document.getElementById(id); if (n) clear(n); });
+  }
+
+  /* ---------- empty query state ---------- */
+  function renderEmptyQuery() {
+    ["legend", "chart-meta", "instant-table", "instant-ts"].forEach(function (id) {
+      var n = document.getElementById(id); if (n) clear(n);
+    });
+    var area = document.getElementById("chart-area");
+    if (!area) return;
+    clear(area);
+    var chips = ["up", DEFAULT_QUERY, "omni_head_series"].map(function (q) {
+      var chip = el("button", { class: "example-chip", type: "button" }, [q]);
+      chip.addEventListener("click", function () {
+        var inp = document.querySelector(".query-input input");
+        if (inp) inp.value = q;
+        state.query = q;
+        runQuery();
+      });
+      return chip;
+    });
+    area.appendChild(el("div", { class: "empty" }, [
+      el("div", {}, ["Enter a PromQL query to graph it — or pick an example:"]),
+      el("div", { class: "examples" }, chips),
+    ]));
+  }
+
+  /* ---------- query autocomplete ---------- */
+  function loadAutocompleteData() {
+    api("/api/v1/label/__name__/values").then(function (v) { acData.metrics = v || []; }).catch(function () {});
+    api("/api/v1/labels").then(function (v) {
+      acData.labels = (v || []).filter(function (n) { return n !== "__name__"; });
+    }).catch(function () {});
+  }
+
+  // tokenAt returns the identifier being typed (the run of name characters ending
+  // at the caret) and where it starts.
+  function tokenAt(value, caret) {
+    var start = caret;
+    while (start > 0 && /[A-Za-z0-9_:]/.test(value.charAt(start - 1))) start--;
+    return { start: start, prefix: value.slice(start, caret) };
+  }
+
+  // tokenEnd returns the index just past the identifier the caret sits in, scanning
+  // right over name characters — so accepting a completion replaces the whole token,
+  // not just the part left of the caret.
+  function tokenEnd(value, caret) {
+    var end = caret;
+    while (end < value.length && /[A-Za-z0-9_:]/.test(value.charAt(end))) end++;
+    return end;
+  }
+
+  // labelContext scans value[0..caret) to classify the caret: inside a {…} label
+  // set, inside a quoted value, or just after '=' (a label-value position).
+  function labelContext(value, caret) {
+    var depth = 0, inQuote = false, afterEq = false;
+    for (var i = 0; i < caret; i++) {
+      var ch = value.charAt(i);
+      if (inQuote) {
+        if (ch === '"') {
+          // A quote terminates the string only if preceded by an even number of
+          // backslashes (an odd count means the quote itself is escaped).
+          var bs = 0, j = i - 1;
+          while (j >= 0 && value.charAt(j) === "\\") { bs++; j--; }
+          if (bs % 2 === 0) inQuote = false;
+        }
+        continue;
+      }
+      if (ch === '"') { inQuote = true; afterEq = false; }
+      else if (ch === "{") { depth++; afterEq = false; }
+      else if (ch === "}") { if (depth > 0) depth--; afterEq = false; }
+      else if (ch === "=") { afterEq = true; }
+      else if (ch === ",") { afterEq = false; }
+    }
+    return { inBraces: depth > 0, inQuote: inQuote, afterEq: afterEq };
+  }
+
+  // computeSuggestions picks the candidate list for the caret: label names inside
+  // {…}, otherwise metric names + PromQL funcs/keywords. Returns null when nothing
+  // should be shown (typing a value, or no prefix outside a fresh label set).
+  function computeSuggestions(value, caret) {
+    var ctx = labelContext(value, caret);
+    if (ctx.inQuote || ctx.afterEq) return null;
+    var tok = tokenAt(value, caret);
+    var pool;
+    if (ctx.inBraces) {
+      pool = acData.labels.map(function (n) { return { text: n, kind: "label" }; });
+    } else {
+      pool = acData.metrics.map(function (n) { return { text: n, kind: "metric" }; }).concat(PROMQL_FUNCS);
+      if (AGG_BEFORE.test(value.slice(0, tok.start))) pool = pool.concat(PROMQL_KEYWORDS);
+    }
+    if (!tok.prefix) {
+      // Skip whitespace so the label list still opens after "comma + space".
+      var pi = tok.start - 1;
+      while (pi >= 0 && (value.charAt(pi) === " " || value.charAt(pi) === "\t")) pi--;
+      var prev = pi >= 0 ? value.charAt(pi) : "";
+      if (!(ctx.inBraces && (prev === "{" || prev === ","))) return null;
+    }
+    var pl = tok.prefix.toLowerCase();
+    var matches = pool.filter(function (s) { return s.text.toLowerCase().indexOf(pl) === 0; });
+    matches.sort(function (a, b) { return a.text.length - b.text.length || (a.text < b.text ? -1 : 1); });
+    if (!matches.length) return null;
+    return { items: matches.slice(0, 12), prefix: tok.prefix };
+  }
+
+  function renderAutocomplete(input, dropdown, onRun) {
+    var items = [], active = -1, prefixLower = "";
+
+    function close() { items = []; active = -1; clear(dropdown); dropdown.style.display = "none"; }
+
+    function paintActive() {
+      var rows = dropdown.childNodes;
+      for (var i = 0; i < rows.length; i++) rows[i].className = "ac-item" + (i === active ? " active" : "");
+      if (active >= 0 && rows[active] && rows[active].scrollIntoView) rows[active].scrollIntoView({ block: "nearest" });
+    }
+
+    // nameNode bolds the matched prefix using text nodes only (never innerHTML),
+    // so metric/label names from the API can never inject markup.
+    function nameNode(text) {
+      var name = el("span", { class: "ac-name" }, []);
+      if (prefixLower && text.toLowerCase().indexOf(prefixLower) === 0) {
+        name.appendChild(el("b", {}, [text.slice(0, prefixLower.length)]));
+        name.appendChild(document.createTextNode(text.slice(prefixLower.length)));
+      } else {
+        name.appendChild(document.createTextNode(text));
+      }
+      return name;
+    }
+
+    function render(matches) {
+      clear(dropdown);
+      items = matches;
+      active = matches.length ? 0 : -1;
+      matches.forEach(function (s, i) {
+        var row = el("div", { class: "ac-item" + (i === 0 ? " active" : ""), role: "option" }, [
+          nameNode(s.text),
+          el("span", { class: "ac-kind" }, [s.kind]),
+        ]);
+        // mousedown (not click) so it fires before the input's blur closes us.
+        row.addEventListener("mousedown", function (e) { e.preventDefault(); accept(s); });
+        row.addEventListener("mouseenter", function () { active = i; paintActive(); });
+        dropdown.appendChild(row);
+      });
+      dropdown.style.display = "block";
+    }
+
+    function update() {
+      var res = computeSuggestions(input.value, input.selectionStart);
+      if (!res) { close(); return; }
+      prefixLower = res.prefix.toLowerCase();
+      render(res.items);
+    }
+
+    // wouldChange reports whether accepting choice would actually edit the query —
+    // used so Enter runs (rather than re-accepting) when the highlighted item is
+    // already fully typed.
+    function wouldChange(choice) {
+      var value = input.value, caret = input.selectionStart;
+      var tok = tokenAt(value, caret), end = tokenEnd(value, caret);
+      var insert = choice.text;
+      if ((choice.kind === "func" || choice.kind === "agg") && value.charAt(end) !== "(") insert += "(";
+      return value.slice(tok.start, end) !== insert;
+    }
+
+    function accept(choice) {
+      var value = input.value, caret = input.selectionStart;
+      var tok = tokenAt(value, caret), end = tokenEnd(value, caret);
+      var before = value.slice(0, tok.start);
+      var after = value.slice(end); // suffix after the whole token, not just the caret
+      var insert = choice.text;
+      if ((choice.kind === "func" || choice.kind === "agg") && after.charAt(0) !== "(") insert += "(";
+      input.value = before + insert + after;
+      state.query = input.value;
+      var pos = before.length + insert.length;
+      close();
+      input.focus();
+      input.setSelectionRange(pos, pos);
+    }
+
+    input.addEventListener("input", update);
+    input.addEventListener("focus", update);
+    input.addEventListener("blur", function () { setTimeout(close, 150); });
+    input.addEventListener("keydown", function (e) {
+      if (items.length) {
+        if (e.key === "ArrowDown") { active = (active + 1) % items.length; paintActive(); e.preventDefault(); return; }
+        if (e.key === "ArrowUp") { active = (active - 1 + items.length) % items.length; paintActive(); e.preventDefault(); return; }
+        if (e.key === "Escape") { close(); e.preventDefault(); return; }
+        if (e.key === "Tab" && active >= 0) { accept(items[active]); e.preventDefault(); return; }
+        // Enter accepts a suggestion only when it would change the query; if the
+        // highlighted item is already fully typed, fall through and run instead.
+        if (e.key === "Enter" && active >= 0 && wouldChange(items[active])) { accept(items[active]); e.preventDefault(); return; }
+      }
+      if (e.key === "Enter") { close(); onRun(); }
+    });
   }
 
   function renderMeta(matrix, elapsed) {

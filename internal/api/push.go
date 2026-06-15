@@ -94,7 +94,10 @@ func (a *API) authorizePush(r *http.Request) bool {
 	if want == "" {
 		return true
 	}
-	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return false
+	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 

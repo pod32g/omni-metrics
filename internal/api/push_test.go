@@ -109,6 +109,19 @@ func TestPushAuth(t *testing.T) {
 	}
 }
 
+func TestPushAuthRequiresBearerScheme(t *testing.T) {
+	h, _ := buildPushAPI(t, 0, 0, "s3cr3t")
+	// A raw token without the "Bearer " scheme must be rejected, per the spec.
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/push", strings.NewReader(`{"job":"app","series":[{"name":"a","value":1}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "s3cr3t")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("raw token without Bearer scheme: code %d, want 401", rec.Code)
+	}
+}
+
 func TestPushSourcesEndpoint(t *testing.T) {
 	h, _ := buildPushAPI(t, 0, 0, "")
 	postJSON(t, h, "/api/v1/push", "", `{"job":"app","instance":"i1","series":[{"name":"a","value":1}]}`)

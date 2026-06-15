@@ -1,0 +1,96 @@
+name: CI/CD
+
+on:
+  push:
+    branches: ['**']
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+
+# Cancel superseded runs per ref, but never cancel a main deploy mid-flight.
+concurrency:
+  group: cicd-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    runs-on: [self-hosted, omni-metrics]   # must match the runner's labels
+    # SECURITY: never run untrusted fork-PR code on a self-hosted runner.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build image (gate - must pass before deploy)
+        run: docker compose build
+
+  deploy:
+    needs: [build]
+    if: github.ref == 'refs/heads/main'   # only main deploys
+    runs-on: [self-hosted, omni-metrics]
+    concurrency:
+      group: deploy-omni-metrics           # serialize deploys; never overlap
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - name: Deploy on the target (local docker - the runner is on the target)
+        env:
+          SVC: omni-metrics
+          VOL: omni-metrics-data
+          PORT: "9090"
+        run: |
+          set -euo pipefail
+          DEST="$HOME/omni-metrics"
+
+          # Sync the checked-out code into the deploy dir. No --delete: the live
+          # WAL lives in the named docker volume, never in this directory, and
+          # host-side backups under backups/ must be preserved.
+          mkdir -p "$DEST" "$DEST/backups"
+          rsync -a --exclude='.git' ./ "$DEST/"
+          cd "$DEST"
+
+          ts="$(date +%Y%m%d-%H%M%S)"
+
+          # crash-loop guard: a wedged/restarting container on the runner's own
+          # box can starve the deploy, so stop it before doing anything else.
+          cid="$(docker compose ps -q "$SVC" 2>/dev/null || true)"
+          if [ -n "$cid" ]; then
+            state="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null || echo)"
+            case "$state" in
+              *restarting*|*unhealthy*) echo "guard: container is '$state' - stopping"; docker compose stop "$SVC" || true ;;
+            esac
+          fi
+
+          # Back up the data volume BEFORE deploying. The WAL survives a recreate
+          # (named volume), but a snapshot lets us roll back a bad upgrade.
+          if docker volume inspect "$VOL" >/dev/null 2>&1; then
+            echo "backup: snapshotting volume $VOL"
+            docker run --rm -v "$VOL":/data:ro -v "$DEST/backups":/backups busybox \
+              tar czf "/backups/data-${ts}.tgz" -C /data . || echo "backup: warning - tar returned non-zero"
+          else
+            echo "backup: no data volume yet (first deploy) - skipping"
+          fi
+
+          # stop-first, then recreate: old and new must never hold the WAL at once.
+          docker compose stop "$SVC" 2>/dev/null || true
+          docker compose up --build -d "$SVC"
+
+          # wait for readiness (probe from inside; distroless binary self-checks).
+          ok=""
+          for i in $(seq 1 30); do
+            if docker compose exec -T "$SVC" /omni healthcheck -url "http://localhost:9090/-/healthy" >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          if [ -z "$ok" ]; then
+            echo "deploy: service did not become healthy"; docker compose logs --tail=80 "$SVC"; exit 1
+          fi
+
+          # external smoke test on the published port (proves the port mapping).
+          curl -fsS --max-time 10 "http://localhost:${PORT}/-/healthy" >/dev/null
+          echo "deploy: health OK on :${PORT}"
+
+          # Integrity is the WAL replay itself (proven by the kill -9 recovery
+          # test); a healthy server after recreate means the WAL replayed cleanly.
+          # Retain only the 10 most recent host-side backups.
+          ls -1t "$DEST"/backups/*.tgz 2>/dev/null | tail -n +11 | xargs -r rm -f || true
+          echo "deploy: success"

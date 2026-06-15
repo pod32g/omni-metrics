@@ -6,8 +6,12 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -28,6 +32,12 @@ var version = "0.1.0-m1"
 const defaultMaxSeries = 1_000_000
 
 func main() {
+	// `omni healthcheck -url <url>` is a self-probe used by the container
+	// healthcheck and the deploy smoke test; it exits 0 on a 2xx response.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheckCmd(os.Args[2:]))
+	}
+
 	var (
 		configPath  string
 		listen      string
@@ -55,7 +65,7 @@ func main() {
 			JobName:        "omni",
 			ScrapeInterval: cfg.Global.ScrapeInterval,
 			ScrapeTimeout:  cfg.Global.ScrapeTimeout,
-			StaticConfigs:  []config.StaticConfig{{Targets: []string{cfg.Web.Listen}}},
+			StaticConfigs:  []config.StaticConfig{{Targets: []string{selfScrapeTarget(cfg.Web.Listen)}}},
 		}}
 	}
 
@@ -154,4 +164,53 @@ func storageDesc(path string) string {
 		return "in-memory"
 	}
 	return path
+}
+
+// selfScrapeTarget turns a listen address into one the server can scrape itself
+// on: a wildcard bind (0.0.0.0 / :: / empty host) is rewritten to loopback so the
+// in-container self-scrape connects cleanly.
+func selfScrapeTarget(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return listen
+	}
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
+}
+
+// healthcheckCmd parses `healthcheck -url <url>` and returns a process exit code.
+func healthcheckCmd(args []string) int {
+	fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
+	url := fs.String("url", "", "health endpoint URL to probe")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *url == "" {
+		fmt.Fprintln(os.Stderr, "healthcheck: -url is required")
+		return 2
+	}
+	if err := doHealthcheck(*url, 5*time.Second); err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck failed: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// doHealthcheck performs a single GET and returns an error unless the response is
+// a 2xx. It carries no other dependencies so a distroless image can run it.
+func doHealthcheck(url string, timeout time.Duration) error {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("unhealthy: HTTP %d", resp.StatusCode)
+	}
+	return nil
 }

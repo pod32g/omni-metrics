@@ -64,6 +64,8 @@ func (a *API) routes() {
 	a.mux.HandleFunc("GET /api/v1/label/{name}/values", a.handleLabelValues)
 	a.mux.HandleFunc("GET /api/v1/targets", a.handleTargets)
 	a.mux.HandleFunc("GET /metrics", a.handleMetrics)
+	a.mux.HandleFunc("GET /-/healthy", a.handleHealth)
+	a.mux.HandleFunc("GET /-/ready", a.handleHealth)
 	if a.opts.Web != nil {
 		a.mux.Handle("/", a.opts.Web)
 	}
@@ -216,6 +218,14 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	a.self.IncHTTP("metrics")
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	a.self.WriteExposition(w)
+}
+
+// handleHealth backs /-/healthy and /-/ready: a liveness/readiness probe used by
+// the container healthcheck and the deploy smoke test.
+func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("omni-metrics is healthy\n"))
 }
 
 // --- conversion helpers ---

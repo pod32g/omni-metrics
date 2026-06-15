@@ -205,6 +205,17 @@ func TestRangeExcessivePointsRejected(t *testing.T) {
 	}
 }
 
+func TestHealthEndpoints(t *testing.T) {
+	h := buildAPI(t)
+	for _, p := range []string{"/-/healthy", "/-/ready"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s = %d, want 200", p, rec.Code)
+		}
+	}
+}
+
 func TestWebFallback(t *testing.T) {
 	h := buildAPI(t)
 	rec := httptest.NewRecorder()

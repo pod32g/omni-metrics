@@ -7,9 +7,11 @@
 
 # Local data / runtime state
 /data/
+/backups/
 *.wal
 *.db
 *.sqlite
+*.tgz
 
 # Local editor / IDE / agent config
 .vscode/launch.json

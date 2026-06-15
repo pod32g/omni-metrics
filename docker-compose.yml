@@ -1,0 +1,27 @@
+services:
+  omni-metrics:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-0.1.0-m1}
+    image: omni-metrics:local
+    container_name: omni-metrics
+    restart: unless-stopped
+    # Listen on all interfaces inside the container; the host port mapping
+    # controls external exposure. The self-scrape uses loopback (see main.go).
+    command: ["-listen", "0.0.0.0:9090", "-storage", "/data"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - omni-metrics-data:/data
+    healthcheck:
+      # Distroless has no shell/curl, so the binary self-probes.
+      test: ["CMD", "/omni", "healthcheck", "-url", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  omni-metrics-data:
+    name: omni-metrics-data

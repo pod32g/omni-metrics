@@ -117,6 +117,7 @@
     var view = document.getElementById("view");
     clear(view);
     if (name === "targets") renderTargets(view);
+    else if (name === "pushers") renderPushers(view);
     else if (name === "status") renderStatus(view);
     else renderGraph(view);
   }
@@ -367,6 +368,53 @@
     if (secs < 60) return secs + "s ago";
     if (secs < 3600) return Math.floor(secs / 60) + "m ago";
     return Math.floor(secs / 3600) + "h ago";
+  }
+
+  /* ---------- pushers view ---------- */
+  function renderPushers(view) {
+    api("/api/v1/push/sources").then(function (sources) {
+      sources = sources || [];
+      var ok = sources.filter(function (s) { return !s.lastError; }).length;
+      view.appendChild(el("div", { class: "page-head" }, [
+        el("div", {}, [
+          el("div", { class: "eyebrow" }, ["Push"]),
+          el("div", { class: "summary" }, [
+            el("h1", {}, ["Pushers"]),
+            el("span", { class: "mono up" }, [ok + " ok"]),
+            el("span", { class: "mono down" }, [(sources.length - ok) + " err"]),
+          ]),
+        ]),
+      ]));
+      var panel = el("div", { class: "panel" }, [
+        el("div", { class: "col-head" }, [
+          el("span", { style: "flex:1.4" }, ["Source"]),
+          el("span", { style: "width:90px" }, ["State"]),
+          el("span", { style: "width:120px" }, ["Last push"]),
+          el("span", { style: "width:90px;text-align:right" }, ["Pushes"]),
+          el("span", { style: "width:110px;text-align:right" }, ["Samples"]),
+          el("span", { style: "flex:1", "data-dim": "1" }, ["Error"]),
+        ]),
+      ]);
+      if (!sources.length) panel.appendChild(el("div", { class: "empty" }, ["No pushers have reported yet."]));
+      sources.forEach(function (s) {
+        var fresh = !s.lastError;
+        panel.appendChild(el("div", { class: "row" }, [
+          el("span", { style: "flex:1.4" }, ['job="' + s.job + '" instance="' + s.instance + '"']),
+          el("span", { style: "width:90px" }, [okPill(fresh)]),
+          el("span", { style: "width:120px" }, [s.lastPush && new Date(s.lastPush).getTime() ? ago(s.lastPush) : "–"]),
+          el("span", { class: "mono", style: "width:90px;text-align:right;display:inline-block" }, [String(s.pushesTotal || 0)]),
+          el("span", { class: "mono", style: "width:110px;text-align:right;display:inline-block" }, [String(s.samplesTotal || 0)]),
+          el("span", { style: "flex:1" }, [s.lastError || ""]),
+        ]));
+      });
+      view.appendChild(panel);
+    }).catch(function (err) { view.appendChild(el("div", { class: "error-banner" }, [String(err.message || err)])); });
+  }
+
+  function okPill(ok) {
+    var pill = el("span", { class: "pill " + (ok ? "up" : "down") }, [el("span", { class: "dot " + (ok ? "ok" : "err") }, [])]);
+    pill.appendChild(document.createTextNode(ok ? "OK" : "ERR"));
+    return pill;
   }
 
   /* ---------- status view ---------- */

@@ -1,0 +1,215 @@
+// Package config loads and validates the YAML configuration for omni-metrics:
+// global scrape defaults, storage location/retention, the web listen address,
+// and the scrape jobs. A config-less run uses Default(), which scrapes the
+// server's own /metrics endpoint.
+package config
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// DefaultListen is the address the web/API server binds when unspecified. It
+// binds loopback only — exposing the server is an explicit choice, not a default.
+const DefaultListen = "127.0.0.1:9090"
+
+// Config is the root configuration.
+type Config struct {
+	Global        GlobalConfig   `yaml:"global"`
+	Storage       StorageConfig  `yaml:"storage"`
+	Web           WebConfig      `yaml:"web"`
+	ScrapeConfigs []ScrapeConfig `yaml:"scrape_configs"`
+}
+
+// GlobalConfig holds defaults applied to scrape jobs that omit their own.
+type GlobalConfig struct {
+	ScrapeInterval Duration `yaml:"scrape_interval"`
+	ScrapeTimeout  Duration `yaml:"scrape_timeout"`
+}
+
+// StorageConfig configures the on-disk WAL/data directory and head retention.
+type StorageConfig struct {
+	Path      string   `yaml:"path"`
+	Retention Duration `yaml:"retention"`
+}
+
+// WebConfig configures the HTTP server.
+type WebConfig struct {
+	Listen string `yaml:"listen"`
+}
+
+// ScrapeConfig is one scrape job.
+type ScrapeConfig struct {
+	JobName        string         `yaml:"job_name"`
+	ScrapeInterval Duration       `yaml:"scrape_interval"`
+	ScrapeTimeout  Duration       `yaml:"scrape_timeout"`
+	StaticConfigs  []StaticConfig `yaml:"static_configs"`
+}
+
+// StaticConfig is a static list of target addresses.
+type StaticConfig struct {
+	Targets []string `yaml:"targets"`
+}
+
+// Default returns a configuration that scrapes only the server's own /metrics.
+func Default() *Config {
+	c := &Config{
+		Global:  GlobalConfig{ScrapeInterval: Duration(15 * time.Second), ScrapeTimeout: Duration(10 * time.Second)},
+		Storage: StorageConfig{Path: "", Retention: Duration(6 * time.Hour)},
+		Web:     WebConfig{Listen: DefaultListen},
+	}
+	c.ScrapeConfigs = []ScrapeConfig{{
+		JobName:       "omni",
+		StaticConfigs: []StaticConfig{{Targets: []string{c.Web.Listen}}},
+	}}
+	return c
+}
+
+// Load reads and validates a configuration file.
+func Load(path string) (*Config, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config: %w", err)
+	}
+	return LoadBytes(b)
+}
+
+// LoadBytes parses, defaults, and validates a configuration document.
+func LoadBytes(b []byte) (*Config, error) {
+	c := &Config{}
+	if err := yaml.Unmarshal(b, c); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	c.applyDefaults()
+	if err := c.validate(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (c *Config) applyDefaults() {
+	if c.Global.ScrapeInterval == 0 {
+		c.Global.ScrapeInterval = Duration(15 * time.Second)
+	}
+	if c.Global.ScrapeTimeout == 0 {
+		c.Global.ScrapeTimeout = Duration(10 * time.Second)
+	}
+	if c.Storage.Retention == 0 {
+		c.Storage.Retention = Duration(6 * time.Hour)
+	}
+	if c.Web.Listen == "" {
+		c.Web.Listen = DefaultListen
+	}
+	if len(c.ScrapeConfigs) == 0 {
+		c.ScrapeConfigs = []ScrapeConfig{{
+			JobName:       "omni",
+			StaticConfigs: []StaticConfig{{Targets: []string{c.Web.Listen}}},
+		}}
+	}
+	for i := range c.ScrapeConfigs {
+		sc := &c.ScrapeConfigs[i]
+		if sc.ScrapeInterval == 0 {
+			sc.ScrapeInterval = c.Global.ScrapeInterval
+		}
+		if sc.ScrapeTimeout == 0 {
+			sc.ScrapeTimeout = c.Global.ScrapeTimeout
+		}
+	}
+}
+
+func (c *Config) validate() error {
+	seen := map[string]bool{}
+	for _, sc := range c.ScrapeConfigs {
+		if sc.JobName == "" {
+			return fmt.Errorf("scrape config: job_name must not be empty")
+		}
+		if seen[sc.JobName] {
+			return fmt.Errorf("scrape config: duplicate job_name %q", sc.JobName)
+		}
+		seen[sc.JobName] = true
+		total := 0
+		for _, s := range sc.StaticConfigs {
+			total += len(s.Targets)
+		}
+		if total == 0 {
+			return fmt.Errorf("scrape config %q: at least one target required", sc.JobName)
+		}
+	}
+	return nil
+}
+
+// AllTargets returns the flattened target list for a job.
+func (sc ScrapeConfig) AllTargets() []string {
+	var out []string
+	for _, s := range sc.StaticConfigs {
+		out = append(out, s.Targets...)
+	}
+	return out
+}
+
+// Duration is a time.Duration that (un)marshals from Prometheus-style strings
+// such as "15s", "5m", "1h", "2d", "1w".
+type Duration time.Duration
+
+// D returns the underlying time.Duration.
+func (d Duration) D() time.Duration { return time.Duration(d) }
+
+func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return err
+	}
+	parsed, err := parseDuration(s)
+	if err != nil {
+		return err
+	}
+	*d = Duration(parsed)
+	return nil
+}
+
+func (d Duration) MarshalYAML() (interface{}, error) {
+	return time.Duration(d).String(), nil
+}
+
+// parseDuration parses compound durations with units s, m, h, d, w, y.
+func parseDuration(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty duration")
+	}
+	var total time.Duration
+	i := 0
+	for i < len(s) {
+		start := i
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		if start == i || i >= len(s) {
+			return 0, fmt.Errorf("malformed duration %q", s)
+		}
+		num, _ := strconv.Atoi(s[start:i])
+		var unit time.Duration
+		switch s[i] {
+		case 's':
+			unit = time.Second
+		case 'm':
+			unit = time.Minute
+		case 'h':
+			unit = time.Hour
+		case 'd':
+			unit = 24 * time.Hour
+		case 'w':
+			unit = 7 * 24 * time.Hour
+		case 'y':
+			unit = 365 * 24 * time.Hour
+		default:
+			return 0, fmt.Errorf("unknown duration unit %q in %q", string(s[i]), s)
+		}
+		total += time.Duration(num) * unit
+		i++
+	}
+	return total, nil
+}

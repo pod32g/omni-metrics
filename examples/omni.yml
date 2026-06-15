@@ -1,0 +1,28 @@
+# Example omni-metrics configuration.
+# Run: ./omni -config examples/omni.yml -storage ./data
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+storage:
+  # WAL/data directory. Comment out (or run without -storage) for in-memory only.
+  path: ./data
+  # How long to keep samples in the head block.
+  retention: 6h
+
+web:
+  # Bind loopback by default — exposing the server is an explicit choice.
+  listen: 127.0.0.1:9090
+
+scrape_configs:
+  # Scrape omni-metrics' own /metrics endpoint.
+  - job_name: omni
+    static_configs:
+      - targets: [127.0.0.1:9090]
+
+  # Example: a node_exporter-style fleet (edit to taste).
+  # - job_name: node
+  #   scrape_interval: 30s
+  #   static_configs:
+  #     - targets: [node-01:9100, node-02:9100]

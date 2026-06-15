@@ -1,0 +1,25 @@
+# Build artifacts
+/omni
+/omni-metrics
+/cmd/omni/omni
+*.test
+*.out
+
+# Local data / runtime state
+/data/
+*.wal
+*.db
+*.sqlite
+
+# Local editor / IDE / agent config
+.vscode/launch.json
+.idea/
+.claude/launch.json
+.claude/settings.local.json
+
+# OS cruft
+.DS_Store
+
+# Secrets / local env
+.env
+*.local.yml

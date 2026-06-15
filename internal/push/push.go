@@ -34,7 +34,7 @@ type SamplePoint struct {
 var reservedLabels = map[string]struct{}{model.MetricName: {}, "job": {}, "instance": {}}
 
 func (r *Request) validate() error {
-	if r.Job == "" {
+	if strings.TrimSpace(r.Job) == "" {
 		return fmt.Errorf("job must not be empty")
 	}
 	if len(r.Series) == 0 {

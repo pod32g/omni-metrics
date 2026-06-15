@@ -16,6 +16,7 @@ func TestRequestValidate(t *testing.T) {
 		{name: "ok value", req: Request{Job: "j", Series: []SeriesInput{{Name: "m", Value: v(1)}}}, ok: true},
 		{name: "ok samples", req: Request{Job: "j", Series: []SeriesInput{{Name: "m", Samples: []SamplePoint{{Value: 1}}}}}, ok: true},
 		{name: "empty job", req: Request{Series: []SeriesInput{{Name: "m", Value: v(1)}}}},
+		{name: "whitespace-only job", req: Request{Job: "  \t", Series: []SeriesInput{{Name: "m", Value: v(1)}}}},
 		{name: "no series", req: Request{Job: "j"}},
 		{name: "empty name", req: Request{Job: "j", Series: []SeriesInput{{Value: v(1)}}}},
 		{name: "bad metric name", req: Request{Job: "j", Series: []SeriesInput{{Name: "1bad", Value: v(1)}}}},

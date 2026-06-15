@@ -11,13 +11,17 @@ import (
 // SelfMetrics is the server's own instrumentation, exposed at /metrics in the
 // Prometheus text format so omni-metrics can scrape itself.
 type SelfMetrics struct {
-	mu          sync.Mutex
-	version     string
-	headSeries  func() int
-	start       time.Time
-	httpReqs    map[string]int64
-	queries     int64
-	queryErrors int64
+	mu           sync.Mutex
+	version      string
+	headSeries   func() int
+	start        time.Time
+	httpReqs     map[string]int64
+	queries      int64
+	queryErrors  int64
+	pushOK       int64
+	pushErr      int64
+	pushSamples  int64
+	pushRejected int64
 }
 
 // NewSelfMetrics creates a collector. headSeries may be nil.
@@ -44,6 +48,31 @@ func (s *SelfMetrics) IncQuery(isErr bool) {
 	if isErr {
 		s.queryErrors++
 	}
+	s.mu.Unlock()
+}
+
+// IncPushRequest counts a push request, flagging success or failure.
+func (s *SelfMetrics) IncPushRequest(ok bool) {
+	s.mu.Lock()
+	if ok {
+		s.pushOK++
+	} else {
+		s.pushErr++
+	}
+	s.mu.Unlock()
+}
+
+// AddPushSamples adds to the count of successfully appended pushed samples.
+func (s *SelfMetrics) AddPushSamples(n int) {
+	s.mu.Lock()
+	s.pushSamples += int64(n)
+	s.mu.Unlock()
+}
+
+// IncPushRejected counts a push rejected by the head cardinality cap.
+func (s *SelfMetrics) IncPushRejected() {
+	s.mu.Lock()
+	s.pushRejected++
 	s.mu.Unlock()
 }
 
@@ -74,6 +103,19 @@ func (s *SelfMetrics) WriteExposition(w io.Writer) {
 	fmt.Fprintf(w, "# HELP omni_query_errors_total Total PromQL queries that failed.\n")
 	fmt.Fprintf(w, "# TYPE omni_query_errors_total counter\n")
 	fmt.Fprintf(w, "omni_query_errors_total %d\n", s.queryErrors)
+
+	fmt.Fprintf(w, "# HELP omni_push_requests_total Total push requests by status.\n")
+	fmt.Fprintf(w, "# TYPE omni_push_requests_total counter\n")
+	fmt.Fprintf(w, "omni_push_requests_total{status=%q} %d\n", "success", s.pushOK)
+	fmt.Fprintf(w, "omni_push_requests_total{status=%q} %d\n", "error", s.pushErr)
+
+	fmt.Fprintf(w, "# HELP omni_push_samples_appended_total Total samples appended via push.\n")
+	fmt.Fprintf(w, "# TYPE omni_push_samples_appended_total counter\n")
+	fmt.Fprintf(w, "omni_push_samples_appended_total %d\n", s.pushSamples)
+
+	fmt.Fprintf(w, "# HELP omni_push_series_rejected_total Push appends rejected by the head series cap.\n")
+	fmt.Fprintf(w, "# TYPE omni_push_series_rejected_total counter\n")
+	fmt.Fprintf(w, "omni_push_series_rejected_total %d\n", s.pushRejected)
 
 	if s.headSeries != nil {
 		fmt.Fprintf(w, "# HELP omni_head_series Number of series in the head block.\n")

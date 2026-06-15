@@ -44,6 +44,12 @@ func (e *Engine) InstantQuery(ctx context.Context, qs string, ts int64) (Result,
 	case ValueScalar:
 		return Result{Type: ValueScalar, Scalar: Scalar{T: ts, V: r.scalar}}, nil
 	case ValueVector:
+		// Normalize result timestamps to the evaluation time (a bare selector
+		// carries its sample's time so timestamp() works; the reported instant is
+		// the eval time, as in Prometheus).
+		for i := range r.vector {
+			r.vector[i].T = ts
+		}
 		return Result{Type: ValueVector, Vector: r.vector}, nil
 	case ValueMatrix:
 		return Result{Type: ValueMatrix, Matrix: r.matrix}, nil
@@ -220,7 +226,9 @@ func (ev *evaluator) selectInstant(vs *VectorSelector, ts int64) Vector {
 			continue
 		}
 		last := samples[len(samples)-1]
-		out = append(out, VectorSample{Metric: s.Labels(), T: ts, V: last.V})
+		// Carry the sample's own timestamp so timestamp() reports it; the final
+		// instant result is normalized to the eval time in InstantQuery.
+		out = append(out, VectorSample{Metric: s.Labels(), T: last.T, V: last.V})
 	}
 	return out
 }

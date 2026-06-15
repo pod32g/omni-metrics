@@ -99,6 +99,28 @@ func TestSPAStillServedForNonAPI(t *testing.T) {
 	}
 }
 
+// TestWrongMethodOnOperationalEndpoints: a non-GET to /metrics or the health
+// probes must return 405, not the SPA HTML.
+func TestWrongMethodOnOperationalEndpoints(t *testing.T) {
+	h := buildAPI(t)
+	for _, p := range []string{"/metrics", "/-/healthy", "/-/ready"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, p, nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s = %d, want 405", p, rec.Code)
+		}
+		if rec.Header().Get("Allow") != "GET" {
+			t.Errorf("POST %s Allow = %q, want GET", p, rec.Header().Get("Allow"))
+		}
+	}
+	// GET still works.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/-/ready", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /-/ready = %d, want 200", rec.Code)
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

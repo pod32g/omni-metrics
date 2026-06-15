@@ -77,13 +77,16 @@ func (a *API) routes() {
 	a.mux.HandleFunc("GET /api/v1/targets", a.handleTargets)
 	a.mux.HandleFunc("GET /api/v1/status/buildinfo", a.handleBuildInfo)
 	both("/api/v1/metadata", a.handleMetadata)
-	a.mux.HandleFunc("GET /metrics", a.handleMetrics)
+	// Operational endpoints are registered method-agnostically (not "GET <path>")
+	// so a wrong method returns 405 from the handler rather than falling through
+	// to the SPA catch-all and serving HTML.
+	a.mux.HandleFunc("/metrics", a.handleMetrics)
 	if a.opts.PushConfig.Enabled && a.opts.Push != nil {
 		a.mux.HandleFunc("POST /api/v1/push", a.handlePush)
 		a.mux.HandleFunc("GET /api/v1/push/sources", a.handlePushSources)
 	}
-	a.mux.HandleFunc("GET /-/healthy", a.handleHealth)
-	a.mux.HandleFunc("GET /-/ready", a.handleHealth)
+	a.mux.HandleFunc("/-/healthy", a.handleHealth)
+	a.mux.HandleFunc("/-/ready", a.handleHealth)
 	// Unknown /api/** paths (and methods) return the Prometheus JSON error envelope
 	// rather than falling through to the SPA, which would confuse API clients.
 	a.mux.HandleFunc("/api/", a.handleAPINotFound)
@@ -309,14 +312,27 @@ func (a *API) handleTargets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
 	a.self.IncHTTP("metrics")
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	a.self.WriteExposition(w)
 }
 
+func methodNotAllowed(w http.ResponseWriter) {
+	w.Header().Set("Allow", "GET")
+	w.WriteHeader(http.StatusMethodNotAllowed)
+}
+
 // handleHealth backs /-/healthy and /-/ready: a liveness/readiness probe used by
 // the container healthcheck and the deploy smoke test.
 func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("omni-metrics is healthy\n"))

@@ -41,6 +41,13 @@ func bucketQuantile(q float64, buckets []bucket) float64 {
 	if len(buckets) < 2 || !math.IsInf(buckets[len(buckets)-1].upperBound, 1) {
 		return math.NaN()
 	}
+	// Repair non-monotonic cumulative counts caused by scrape races (different
+	// bucket counters read at slightly different instants), as Prometheus does.
+	for i := 1; i < len(buckets); i++ {
+		if buckets[i].count < buckets[i-1].count {
+			buckets[i].count = buckets[i-1].count
+		}
+	}
 	total := buckets[len(buckets)-1].count
 	if total == 0 {
 		return math.NaN()

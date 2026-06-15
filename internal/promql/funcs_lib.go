@@ -197,6 +197,9 @@ func (ev *evaluator) callClamp(c *Call, ts int64) (evalResult, error) {
 	if err != nil {
 		return evalResult{}, err
 	}
+	if mn > mx {
+		return evalResult{kind: ValueVector, vector: Vector{}}, nil // Prometheus: no result
+	}
 	out := make(Vector, 0, len(vec))
 	for _, s := range vec {
 		out = append(out, VectorSample{Metric: dropMetricName(s.Metric), T: ts, V: math.Max(mn, math.Min(mx, s.V))})
@@ -286,10 +289,18 @@ func (ev *evaluator) callSort(c *Call, ts int64) (evalResult, error) {
 	out := append(Vector(nil), vec...)
 	desc := c.Func == "sort_desc"
 	sort.SliceStable(out, func(i, j int) bool {
-		if desc {
-			return out[i].V > out[j].V
+		vi, vj := out[i].V, out[j].V
+		// NaN sorts to the end regardless of direction (Prometheus semantics).
+		if math.IsNaN(vi) {
+			return false
 		}
-		return out[i].V < out[j].V
+		if math.IsNaN(vj) {
+			return true
+		}
+		if desc {
+			return vi > vj
+		}
+		return vi < vj
 	})
 	return evalResult{kind: ValueVector, vector: out}, nil
 }

@@ -152,9 +152,11 @@ func TestOverTime(t *testing.T) {
 
 func TestVectorScalarArithmeticAndCompare(t *testing.T) {
 	eng := promql.NewEngine(buildDB(t))
+	// Arithmetic drops __name__ (the result is a different quantity), matching
+	// Prometheus semantics.
 	got := vectorMap(t, instant(t, eng, "m * 2", 3000))
-	if got[`m{job="b"}`] != 60 {
-		t.Errorf("m*2 b = %v, want 60", got)
+	if got[`{job="b"}`] != 60 {
+		t.Errorf("m*2 b = %v, want {job=b}=60", got)
 	}
 	filtered := vectorMap(t, instant(t, eng, "m > 20", 3000))
 	if len(filtered) != 1 || filtered[`m{job="b"}`] != 30 {

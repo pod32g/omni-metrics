@@ -21,6 +21,13 @@ const (
 	tLParen
 	tRParen
 	tComma
+	tColon // ':' inside [range:res] subqueries
+	tAt    // '@' modifier
+
+	// set operators (assigned by the parser from and/or/unless identifiers)
+	tLAnd
+	tLOr
+	tLUnless
 
 	// matcher operators
 	tEQL      // =
@@ -50,11 +57,14 @@ type token struct {
 	pos int
 }
 
-// lex tokenizes a PromQL query string.
+// lex tokenizes a PromQL query string. bracketDepth tracks '[' nesting so a ':'
+// inside a range/subquery selector is its own token while ':' elsewhere is a
+// valid metric-name character (recording rules like instance:foo:rate5m).
 func lex(input string) ([]token, error) {
 	var toks []token
 	i := 0
 	n := len(input)
+	bracketDepth := 0
 	for i < n {
 		c := input[i]
 		switch {
@@ -69,9 +79,19 @@ func lex(input string) ([]token, error) {
 			i++
 		case c == '[':
 			toks = append(toks, token{tLBracket, "[", i})
+			bracketDepth++
 			i++
 		case c == ']':
 			toks = append(toks, token{tRBracket, "]", i})
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+			i++
+		case c == ':' && bracketDepth > 0:
+			toks = append(toks, token{tColon, ":", i})
+			i++
+		case c == '@':
+			toks = append(toks, token{tAt, "@", i})
 			i++
 		case c == '(':
 			toks = append(toks, token{tLParen, "(", i})

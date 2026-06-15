@@ -35,7 +35,7 @@ func (e *Engine) InstantQuery(ctx context.Context, qs string, ts int64) (Result,
 	if err != nil {
 		return Result{}, err
 	}
-	ev := &evaluator{q: e.q.Querier(), lookback: e.lookback, ctx: ctx}
+	ev := &evaluator{q: e.q.Querier(), lookback: e.lookback, ctx: ctx, start: ts, end: ts}
 	r, err := ev.evalExpr(expr, ts)
 	if err != nil {
 		return Result{}, err
@@ -73,7 +73,7 @@ func (e *Engine) RangeQuery(ctx context.Context, qs string, start, end, step int
 	if err != nil {
 		return Result{}, err
 	}
-	ev := &evaluator{q: e.q.Querier(), lookback: e.lookback, ctx: ctx}
+	ev := &evaluator{q: e.q.Querier(), lookback: e.lookback, ctx: ctx, start: start, end: end}
 
 	order := []string{}
 	byKey := map[string]*SeriesData{}
@@ -125,10 +125,14 @@ type evalResult struct {
 	str    string
 }
 
+// defaultSubqueryStep is the resolution used for a subquery that omits one.
+const defaultSubqueryStep = 60 * 1000 // 1m
+
 type evaluator struct {
-	q        tsdb.Querier
-	lookback int64
-	ctx      context.Context
+	q          tsdb.Querier
+	lookback   int64
+	ctx        context.Context
+	start, end int64 // query bounds, for @ start()/end()
 }
 
 func (ev *evaluator) evalExpr(e Expr, ts int64) (evalResult, error) {
@@ -150,6 +154,12 @@ func (ev *evaluator) evalExpr(e Expr, ts int64) (evalResult, error) {
 		return evalResult{kind: ValueVector, vector: ev.selectInstant(n, ts)}, nil
 	case *MatrixSelector:
 		return evalResult{kind: ValueMatrix, matrix: ev.selectRange(n, ts)}, nil
+	case *SubqueryExpr:
+		m, err := ev.evalSubquery(n, ts)
+		if err != nil {
+			return evalResult{}, err
+		}
+		return evalResult{kind: ValueMatrix, matrix: m}, nil
 	case *Call:
 		return ev.evalCall(n, ts)
 	case *AggregateExpr:
@@ -158,6 +168,22 @@ func (ev *evaluator) evalExpr(e Expr, ts int64) (evalResult, error) {
 		return ev.evalBinary(n, ts)
 	default:
 		return evalResult{}, fmt.Errorf("cannot evaluate %T", e)
+	}
+}
+
+func (ev *evaluator) resolveTime(at *AtModifier, ts int64) int64 {
+	if at == nil {
+		return ts
+	}
+	switch at.Kind {
+	case atTime:
+		return at.TS
+	case atStart:
+		return ev.start
+	case atEnd:
+		return ev.end
+	default:
+		return ts
 	}
 }
 
@@ -172,6 +198,7 @@ func (ev *evaluator) evalUnary(n *UnaryExpr, ts int64) (evalResult, error) {
 	case ValueVector:
 		for i := range r.vector {
 			r.vector[i].V = -r.vector[i].V
+			r.vector[i].Metric = dropMetricName(r.vector[i].Metric)
 		}
 	default:
 		return evalResult{}, fmt.Errorf("unary '-' requires scalar or vector")
@@ -180,9 +207,11 @@ func (ev *evaluator) evalUnary(n *UnaryExpr, ts int64) (evalResult, error) {
 }
 
 // selectInstant returns the latest sample within the lookback window for each
-// series matching the selector.
+// matching series, honoring offset and @ modifiers. The result is reported at the
+// evaluation timestamp.
 func (ev *evaluator) selectInstant(vs *VectorSelector, ts int64) Vector {
-	ss := ev.q.Select(ts-ev.lookback, ts, vs.Matchers...)
+	selTs := ev.resolveTime(vs.At, ts) - vs.Offset
+	ss := ev.q.Select(selTs-ev.lookback, selTs, vs.Matchers...)
 	var out Vector
 	for ss.Next() {
 		s := ss.At()
@@ -196,9 +225,11 @@ func (ev *evaluator) selectInstant(vs *VectorSelector, ts int64) Vector {
 	return out
 }
 
-// selectRange returns all samples in [ts-Range, ts] for each matching series.
+// selectRange returns the samples in the range window for each matching series,
+// honoring offset and @ modifiers.
 func (ev *evaluator) selectRange(ms *MatrixSelector, ts int64) Matrix {
-	ss := ev.q.Select(ts-ms.Range, ts, ms.VS.Matchers...)
+	selTs := ev.resolveTime(ms.At, ts) - ms.Offset
+	ss := ev.q.Select(selTs-ms.Range, selTs, ms.VS.Matchers...)
 	var out Matrix
 	for ss.Next() {
 		s := ss.At()
@@ -212,15 +243,53 @@ func (ev *evaluator) selectRange(ms *MatrixSelector, ts int64) Matrix {
 	return out
 }
 
-func (ev *evaluator) evalCall(c *Call, ts int64) (evalResult, error) {
-	arg, err := ev.evalExpr(c.Args[0], ts)
-	if err != nil {
-		return evalResult{}, err
+// evalSubquery evaluates the inner expression at each resolution step across the
+// subquery range, assembling a range vector.
+func (ev *evaluator) evalSubquery(sq *SubqueryExpr, ts int64) (Matrix, error) {
+	step := sq.Step
+	if step <= 0 {
+		step = defaultSubqueryStep
 	}
-	if arg.kind != ValueMatrix {
-		return evalResult{}, fmt.Errorf("%s expects a range vector argument", c.Func)
+	selTs := ev.resolveTime(sq.At, ts) - sq.Offset
+	start := selTs - sq.Range
+	n := sq.Range / step
+	if n+1 > maxResolution {
+		return nil, fmt.Errorf("subquery exceeds maximum resolution of %d points", maxResolution)
 	}
-	return evalResult{kind: ValueVector, vector: applyRangeFunc(c.Func, arg.matrix, ts)}, nil
+	order := []string{}
+	byKey := map[string]*SeriesData{}
+	add := func(metric model.Labels, t int64, v float64) {
+		key := metric.String()
+		sd := byKey[key]
+		if sd == nil {
+			sd = &SeriesData{Metric: metric}
+			byKey[key] = sd
+			order = append(order, key)
+		}
+		sd.Points = append(sd.Points, Point{T: t, V: v})
+	}
+	for i := int64(0); i <= n; i++ {
+		t := start + i*step
+		r, err := ev.evalExpr(sq.Expr, t)
+		if err != nil {
+			return nil, err
+		}
+		switch r.kind {
+		case ValueVector:
+			for _, s := range r.vector {
+				add(s.Metric, t, s.V)
+			}
+		case ValueScalar:
+			add(model.Labels{}, t, r.scalar)
+		default:
+			return nil, fmt.Errorf("subquery inner expression must return a scalar or instant vector")
+		}
+	}
+	m := make(Matrix, 0, len(order))
+	for _, k := range order {
+		m = append(m, *byKey[k])
+	}
+	return m, nil
 }
 
 func (ev *evaluator) evalAggregate(a *AggregateExpr, ts int64) (evalResult, error) {
@@ -231,7 +300,23 @@ func (ev *evaluator) evalAggregate(a *AggregateExpr, ts int64) (evalResult, erro
 	if inner.kind != ValueVector {
 		return evalResult{}, fmt.Errorf("aggregation %s requires an instant vector", a.Op)
 	}
-	out, err := aggregate(a.Op, inner.vector, a.Grouping, a.Without, ts)
+	var param float64
+	var paramStr string
+	if a.Param != nil {
+		pr, err := ev.evalExpr(a.Param, ts)
+		if err != nil {
+			return evalResult{}, err
+		}
+		switch pr.kind {
+		case ValueScalar:
+			param = pr.scalar
+		case ValueString:
+			paramStr = pr.str
+		default:
+			return evalResult{}, fmt.Errorf("%s parameter must be a scalar or string", a.Op)
+		}
+	}
+	out, err := aggregate(a.Op, inner.vector, a.Grouping, a.Without, ts, param, paramStr)
 	if err != nil {
 		return evalResult{}, err
 	}
@@ -247,5 +332,5 @@ func (ev *evaluator) evalBinary(b *BinaryExpr, ts int64) (evalResult, error) {
 	if err != nil {
 		return evalResult{}, err
 	}
-	return applyBinary(b.Op, l, r)
+	return applyBinary(b, l, r)
 }

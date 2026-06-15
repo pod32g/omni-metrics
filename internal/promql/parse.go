@@ -40,35 +40,66 @@ func (p *parser) expect(tt tokenType, what string) (token, error) {
 	return p.next(), nil
 }
 
-// binaryPrec returns the precedence of a binary operator and whether it is one.
+// binaryPrec returns the precedence of an operator token and whether it is one.
+// Precedence (low to high): or < and/unless < comparison < +,- < *,/,% < ^.
 func binaryPrec(tt tokenType) (int, bool) {
 	switch tt {
 	case tEQLCmp, tNEQ, tGTR, tLSS, tGTE, tLTE:
-		return 1, true
-	case tAdd, tSub:
-		return 2, true
-	case tMul, tDiv, tMod:
 		return 3, true
-	case tPow:
+	case tAdd, tSub:
 		return 4, true
+	case tMul, tDiv, tMod:
+		return 5, true
+	case tPow:
+		return 6, true
 	default:
 		return 0, false
 	}
 }
 
+// binaryOpInfo reports the operator at the cursor, treating the keywords
+// and/or/unless as set operators.
+func (p *parser) binaryOpInfo() (op tokenType, prec int, ok bool) {
+	t := p.peek()
+	if t.typ == tIdentifier {
+		switch t.val {
+		case "or":
+			return tLOr, 1, true
+		case "and":
+			return tLAnd, 2, true
+		case "unless":
+			return tLUnless, 2, true
+		}
+		return 0, 0, false
+	}
+	prec, ok = binaryPrec(t.typ)
+	return t.typ, prec, ok
+}
+
 // parseExpr is a precedence-climbing parser. ^ (pow) is right-associative.
+// After an operator it parses optional `bool` and on/ignoring + group_left/right.
 func (p *parser) parseExpr(minPrec int) (Expr, error) {
 	left, err := p.parseUnary()
 	if err != nil {
 		return nil, err
 	}
 	for {
-		op := p.peek().typ
-		prec, ok := binaryPrec(op)
+		op, prec, ok := p.binaryOpInfo()
 		if !ok || prec < minPrec {
 			break
 		}
 		p.next()
+
+		returnBool := false
+		if p.peek().typ == tIdentifier && p.peek().val == "bool" {
+			p.next()
+			returnBool = true
+		}
+		matching, err := p.parseVectorMatching()
+		if err != nil {
+			return nil, err
+		}
+
 		nextMin := prec + 1
 		if op == tPow {
 			nextMin = prec // right associative
@@ -77,9 +108,69 @@ func (p *parser) parseExpr(minPrec int) (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = &BinaryExpr{Op: op, LHS: left, RHS: right}
+		left = &BinaryExpr{Op: op, LHS: left, RHS: right, Matching: matching, ReturnBool: returnBool}
 	}
 	return left, nil
+}
+
+// parseVectorMatching parses an optional on(...)/ignoring(...) clause and an
+// optional group_left/group_right(...) modifier following a binary operator.
+func (p *parser) parseVectorMatching() (*VectorMatching, error) {
+	t := p.peek()
+	vm := &VectorMatching{}
+	matched := false
+	if t.typ == tIdentifier && (t.val == "on" || t.val == "ignoring") {
+		vm.On = t.val == "on"
+		p.next()
+		labels, err := p.parseLabelList()
+		if err != nil {
+			return nil, err
+		}
+		vm.MatchingLabels = labels
+		matched = true
+	}
+	g := p.peek()
+	if g.typ == tIdentifier && (g.val == "group_left" || g.val == "group_right") {
+		if g.val == "group_left" {
+			vm.Card = cardManyToOne
+		} else {
+			vm.Card = cardOneToMany
+		}
+		p.next()
+		if p.peek().typ == tLParen {
+			labels, err := p.parseLabelList()
+			if err != nil {
+				return nil, err
+			}
+			vm.Include = labels
+		}
+		matched = true
+	}
+	if !matched {
+		return nil, nil
+	}
+	return vm, nil
+}
+
+func (p *parser) parseLabelList() ([]string, error) {
+	if _, err := p.expect(tLParen, "'('"); err != nil {
+		return nil, err
+	}
+	labels := []string{}
+	for p.peek().typ != tRParen {
+		lt, err := p.expect(tIdentifier, "label name")
+		if err != nil {
+			return nil, err
+		}
+		labels = append(labels, lt.val)
+		if p.peek().typ == tComma {
+			p.next()
+		} else if p.peek().typ != tRParen {
+			return nil, fmt.Errorf("expected ',' or ')' in label list, got %q", p.peek().val)
+		}
+	}
+	p.next() // consume )
+	return labels, nil
 }
 
 func (p *parser) parseUnary() (Expr, error) {
@@ -105,47 +196,201 @@ func (p *parser) parseUnary() (Expr, error) {
 
 func (p *parser) parsePrimary() (Expr, error) {
 	t := p.peek()
+	var base Expr
+	var err error
 	switch t.typ {
 	case tNumber:
 		p.next()
-		f, err := strconv.ParseFloat(t.val, 64)
-		if err != nil {
-			return nil, fmt.Errorf("bad number %q: %w", t.val, err)
+		f, perr := strconv.ParseFloat(t.val, 64)
+		if perr != nil {
+			return nil, fmt.Errorf("bad number %q: %w", t.val, perr)
 		}
-		return &NumberLiteral{Val: f}, nil
+		base = &NumberLiteral{Val: f}
 	case tString:
 		p.next()
-		return &StringLiteral{Val: t.val}, nil
+		base = &StringLiteral{Val: t.val}
 	case tLParen:
 		p.next()
-		e, err := p.parseExpr(0)
+		inner, perr := p.parseExpr(0)
+		if perr != nil {
+			return nil, perr
+		}
+		if _, perr := p.expect(tRParen, "')'"); perr != nil {
+			return nil, perr
+		}
+		base = &ParenExpr{Expr: inner}
+	case tLBrace:
+		base, err = p.parseSelectorFrom("")
+	case tIdentifier:
+		name := t.val
+		switch {
+		case aggregators[name]:
+			base, err = p.parseAggregate()
+		case functions[name]:
+			base, err = p.parseCall()
+		default:
+			p.next()
+			base, err = p.parseSelectorFrom(name)
+		}
+	default:
+		return nil, fmt.Errorf("unexpected token %q", t.val)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return p.parsePostfix(base)
+}
+
+// parsePostfix wraps a base expression with an optional [range] (matrix selector)
+// or [range:res] (subquery), then optional offset/@ modifiers in any order.
+func (p *parser) parsePostfix(e Expr) (Expr, error) {
+	if p.peek().typ == tLBracket {
+		p.next()
+		dt, err := p.expect(tDuration, "range duration")
 		if err != nil {
+			return nil, err
+		}
+		rng, err := parseDuration(dt.val)
+		if err != nil {
+			return nil, err
+		}
+		if p.peek().typ == tColon {
+			p.next()
+			step := int64(0)
+			if p.peek().typ == tDuration {
+				st := p.next()
+				step, err = parseDuration(st.val)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if _, err := p.expect(tRBracket, "']'"); err != nil {
+				return nil, err
+			}
+			e = &SubqueryExpr{Expr: e, Range: rng, Step: step}
+		} else {
+			if _, err := p.expect(tRBracket, "']'"); err != nil {
+				return nil, err
+			}
+			vs, ok := e.(*VectorSelector)
+			if !ok {
+				return nil, fmt.Errorf("range [%s] is only valid after a vector selector", dt.val)
+			}
+			e = &MatrixSelector{VS: vs, Range: rng}
+		}
+	}
+	for {
+		t := p.peek()
+		if t.typ == tIdentifier && t.val == "offset" {
+			p.next()
+			neg := false
+			if p.peek().typ == tSub {
+				p.next()
+				neg = true
+			} else if p.peek().typ == tAdd {
+				p.next()
+			}
+			dt, err := p.expect(tDuration, "offset duration")
+			if err != nil {
+				return nil, err
+			}
+			off, err := parseDuration(dt.val)
+			if err != nil {
+				return nil, err
+			}
+			if neg {
+				off = -off
+			}
+			if err := setOffset(e, off); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if t.typ == tAt {
+			p.next()
+			at, err := p.parseAtModifier()
+			if err != nil {
+				return nil, err
+			}
+			if err := setAt(e, at); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		break
+	}
+	return e, nil
+}
+
+func (p *parser) parseAtModifier() (*AtModifier, error) {
+	switch p.peek().typ {
+	case tNumber:
+		nt := p.next()
+		f, err := strconv.ParseFloat(nt.val, 64)
+		if err != nil {
+			return nil, fmt.Errorf("bad @ timestamp %q: %w", nt.val, err)
+		}
+		return &AtModifier{Kind: atTime, TS: int64(f * 1000)}, nil
+	case tSub:
+		p.next()
+		nt, err := p.expect(tNumber, "@ timestamp")
+		if err != nil {
+			return nil, err
+		}
+		f, _ := strconv.ParseFloat(nt.val, 64)
+		return &AtModifier{Kind: atTime, TS: -int64(f * 1000)}, nil
+	case tIdentifier:
+		kw := p.next().val
+		if _, err := p.expect(tLParen, "'(' after "+kw); err != nil {
 			return nil, err
 		}
 		if _, err := p.expect(tRParen, "')'"); err != nil {
 			return nil, err
 		}
-		return &ParenExpr{Expr: e}, nil
-	case tLBrace:
-		return p.parseSelectorFrom("")
-	case tIdentifier:
-		name := t.val
-		switch {
-		case aggregators[name]:
-			return p.parseAggregate()
-		case functions[name]:
-			return p.parseCall()
+		switch kw {
+		case "start":
+			return &AtModifier{Kind: atStart}, nil
+		case "end":
+			return &AtModifier{Kind: atEnd}, nil
 		default:
-			p.next()
-			return p.parseSelectorFrom(name)
+			return nil, fmt.Errorf("invalid @ modifier %q (want a number, start(), or end())", kw)
 		}
 	default:
-		return nil, fmt.Errorf("unexpected token %q", t.val)
+		return nil, fmt.Errorf("expected a timestamp, start(), or end() after @, got %q", p.peek().val)
 	}
 }
 
-// parseSelectorFrom parses an optional {matchers} and optional [range] following
-// an already-consumed metric name (name may be "").
+func setOffset(e Expr, off int64) error {
+	switch n := e.(type) {
+	case *VectorSelector:
+		n.Offset = off
+	case *MatrixSelector:
+		n.Offset = off
+	case *SubqueryExpr:
+		n.Offset = off
+	default:
+		return fmt.Errorf("offset modifier must follow a selector or subquery")
+	}
+	return nil
+}
+
+func setAt(e Expr, at *AtModifier) error {
+	switch n := e.(type) {
+	case *VectorSelector:
+		n.At = at
+	case *MatrixSelector:
+		n.At = at
+	case *SubqueryExpr:
+		n.At = at
+	default:
+		return fmt.Errorf("@ modifier must follow a selector or subquery")
+	}
+	return nil
+}
+
+// parseSelectorFrom builds a VectorSelector from an already-consumed metric name
+// (name may be "") plus an optional {matchers} block. Range/offset/@ are handled
+// by parsePostfix.
 func (p *parser) parseSelectorFrom(name string) (Expr, error) {
 	vs := &VectorSelector{Name: name}
 	if name != "" {
@@ -161,21 +406,6 @@ func (p *parser) parseSelectorFrom(name string) (Expr, error) {
 	}
 	if len(vs.Matchers) == 0 {
 		return nil, fmt.Errorf("vector selector must specify a metric name or at least one matcher")
-	}
-	if p.peek().typ == tLBracket {
-		p.next()
-		dt, err := p.expect(tDuration, "range duration")
-		if err != nil {
-			return nil, err
-		}
-		ms, err := parseDuration(dt.val)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(tRBracket, "']'"); err != nil {
-			return nil, err
-		}
-		return &MatrixSelector{VS: vs, Range: ms}, nil
 	}
 	return vs, nil
 }
@@ -246,9 +476,7 @@ func (p *parser) parseCall() (Expr, error) {
 	if _, err := p.expect(tRParen, "')'"); err != nil {
 		return nil, err
 	}
-	if len(args) != 1 {
-		return nil, fmt.Errorf("%s expects exactly 1 argument, got %d", name, len(args))
-	}
+	// Arity is validated during evaluation, where each function knows its shape.
 	return &Call{Func: name, Args: args}, nil
 }
 
@@ -267,6 +495,17 @@ func (p *parser) parseAggregate() (Expr, error) {
 
 	if _, err := p.expect(tLParen, "'('"); err != nil {
 		return nil, err
+	}
+	// topk/bottomk/quantile/count_values take a leading parameter.
+	if paramAggregators[op] {
+		param, err := p.parseExpr(0)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(tComma, "',' after "+op+" parameter"); err != nil {
+			return nil, err
+		}
+		agg.Param = param
 	}
 	inner, err := p.parseExpr(0)
 	if err != nil {

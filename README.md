@@ -15,6 +15,9 @@ light themes.
 - **Pull-based scraping** of the Prometheus text exposition format, with injected
   `job`/`instance` labels and synthesized `up`, `scrape_duration_seconds`, and
   `scrape_samples_scraped` series.
+- **JSON push ingestion** (`POST /api/v1/push`) for processes that can't be
+  scraped: append semantics, per-source health, an optional bearer token, and a
+  **Pushers** console view.
 - **Custom TSDB**: in-memory head with an inverted index, plus a segmented,
   CRC-checked **write-ahead log** with crash recovery (survives `kill -9`).
 - **PromQL subset**: instant & range queries, label matchers (`= != =~ !~`),
@@ -84,6 +87,27 @@ curl 'http://127.0.0.1:9090/api/v1/query_range?query=rate(omni_http_requests_tot
 curl 'http://127.0.0.1:9090/api/v1/targets'
 ```
 
+### Push ingestion
+
+A process that has no HTTP server to scrape can push instead:
+
+```sh
+curl -XPOST http://127.0.0.1:9090/api/v1/push \
+  -H 'Content-Type: application/json' \
+  -d '{"job":"batch","instance":"worker-7","series":[
+        {"name":"records_processed_total","value":1500},
+        {"name":"queue_depth","labels":{"queue":"high"},"value":12}
+      ]}'
+```
+
+Each push **appends** samples (building a real time series), so `rate()` works on
+pushed counters. Per series, supply either `value` (one sample at receive time) or
+`samples: [{"timestamp_ms":…, "value":…}]`. `value` accepts a number or the
+strings `"NaN"`, `"+Inf"`, `"-Inf"`. The server injects `job`/`instance` and a
+client cannot override `__name__`/`job`/`instance`. Push-source health is shown on
+the **Pushers** console page and at `GET /api/v1/push/sources`. Configure limits
+and an optional bearer token via the `push:` config block.
+
 ## Architecture
 
 ```
@@ -103,6 +127,7 @@ curl 'http://127.0.0.1:9090/api/v1/targets'
 | `internal/tsdb` | Head block + WAL; `Storage`/`Appender`/`Querier` interfaces + conformance suite |
 | `internal/promql` | Lexer, parser, evaluator |
 | `internal/scrape` | Pull manager + target health |
+| `internal/push` | JSON push ingestion + per-source health |
 | `internal/config` | YAML config + validation |
 | `internal/api` | HTTP handlers + self-instrumentation |
 | `web` | Embedded console (HTML/CSS/JS) |

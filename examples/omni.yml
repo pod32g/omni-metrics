@@ -26,3 +26,11 @@ scrape_configs:
   #   scrape_interval: 30s
   #   static_configs:
   #     - targets: [node-01:9100, node-02:9100]
+
+# Push ingestion: clients that cannot be scraped POST JSON samples to
+# /api/v1/push. Append semantics (each push builds the time series).
+push:
+  enabled: true
+  sample_limit: 0          # max samples per request; 0 = unlimited
+  max_body_bytes: 16777216 # 16 MiB request-body cap
+  auth_token: ""           # when set, requires "Authorization: Bearer <token>"

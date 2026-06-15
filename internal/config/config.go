@@ -23,6 +23,7 @@ type Config struct {
 	Storage       StorageConfig  `yaml:"storage"`
 	Web           WebConfig      `yaml:"web"`
 	ScrapeConfigs []ScrapeConfig `yaml:"scrape_configs"`
+	Push          PushConfig     `yaml:"push"`
 }
 
 // GlobalConfig holds defaults applied to scrape jobs that omit their own.
@@ -40,6 +41,29 @@ type StorageConfig struct {
 // WebConfig configures the HTTP server.
 type WebConfig struct {
 	Listen string `yaml:"listen"`
+}
+
+// PushConfig configures the JSON push-ingestion endpoint. Enabled is a *bool so
+// an omitted block defaults to enabled (nil) rather than false.
+type PushConfig struct {
+	Enabled      *bool  `yaml:"enabled"`
+	SampleLimit  int    `yaml:"sample_limit"`
+	MaxBodyBytes int64  `yaml:"max_body_bytes"`
+	AuthToken    string `yaml:"auth_token"`
+}
+
+// DefaultPushBodyBytes bounds a push request body (16 MiB).
+const DefaultPushBodyBytes = 16 << 20
+
+// IsEnabled reports whether the push endpoint should be served (default true).
+func (p PushConfig) IsEnabled() bool { return p.Enabled == nil || *p.Enabled }
+
+// BodyLimit returns the configured request-body cap, or the default when unset.
+func (p PushConfig) BodyLimit() int64 {
+	if p.MaxBodyBytes > 0 {
+		return p.MaxBodyBytes
+	}
+	return DefaultPushBodyBytes
 }
 
 // ScrapeConfig is one scrape job.

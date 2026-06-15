@@ -99,3 +99,49 @@ func TestValidateErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestPushConfigDefaults(t *testing.T) {
+	// No push block => enabled with the default 16 MiB body cap.
+	c, err := LoadBytes([]byte("web:\n  listen: 127.0.0.1:9090\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if !c.Push.IsEnabled() {
+		t.Error("push should default to enabled")
+	}
+	if c.Push.BodyLimit() != 16<<20 {
+		t.Errorf("default body limit = %d, want %d", c.Push.BodyLimit(), 16<<20)
+	}
+	if c.Push.SampleLimit != 0 {
+		t.Errorf("default sample limit = %d, want 0", c.Push.SampleLimit)
+	}
+}
+
+func TestPushConfigExplicit(t *testing.T) {
+	yaml := `
+push:
+  enabled: false
+  sample_limit: 500
+  max_body_bytes: 1048576
+  auth_token: s3cr3t
+`
+	c, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if c.Push.IsEnabled() {
+		t.Error("push should be disabled")
+	}
+	if c.Push.BodyLimit() != 1<<20 {
+		t.Errorf("body limit = %d", c.Push.BodyLimit())
+	}
+	if c.Push.SampleLimit != 500 || c.Push.AuthToken != "s3cr3t" {
+		t.Errorf("push config = %+v", c.Push)
+	}
+}
+
+func TestDefaultEnablesPush(t *testing.T) {
+	if !Default().Push.IsEnabled() {
+		t.Error("Default() push should be enabled")
+	}
+}

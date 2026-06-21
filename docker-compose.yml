@@ -12,6 +12,13 @@ services:
     # so external reachability is guaranteed regardless of the config file.
     # The config file defines the scrape jobs (self + omni-identity).
     command: ["-config", "/etc/omni/omni.yml", "-listen", "0.0.0.0:9090", "-storage", "/data"]
+    environment:
+      # Optional: tee logs to omnilog. Off unless LOGSHIP_ENABLED=true. The API
+      # key is a secret → host .env (gitignored), never committed.
+      LOGSHIP_ENABLED: ${LOGSHIP_ENABLED:-false}
+      LOGSHIP_URL: ${LOGSHIP_URL:-}
+      LOGSHIP_API_KEY: ${LOGSHIP_API_KEY:-}
+      LOGSHIP_SERVICE: ${LOGSHIP_SERVICE:-omni-metrics}
     ports:
       - "9090:9090"
     volumes:

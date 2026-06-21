@@ -18,6 +18,7 @@ import (
 
 	"github.com/pod32g/omni-metrics/internal/api"
 	"github.com/pod32g/omni-metrics/internal/config"
+	"github.com/pod32g/omni-metrics/internal/logship"
 	"github.com/pod32g/omni-metrics/internal/promql"
 	"github.com/pod32g/omni-metrics/internal/push"
 	"github.com/pod32g/omni-metrics/internal/scrape"
@@ -37,6 +38,15 @@ func main() {
 	// healthcheck and the deploy smoke test; it exits 0 on a 2xx response.
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(healthcheckCmd(os.Args[2:]))
+	}
+
+	// Optionally tee log output to an omnilog server (LOGSHIP_* env). Best-effort.
+	if w := setupLogShipping(); w != nil {
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = w.Close(ctx)
+		}()
 	}
 
 	var (
@@ -135,6 +145,32 @@ func main() {
 		log.Fatalf("http server: %v", err)
 	}
 	log.Printf("stopped")
+}
+
+// setupLogShipping tees the standard logger to omnilog when LOGSHIP_ENABLED is
+// set. It returns the writer (to be closed on shutdown) or nil when disabled.
+func setupLogShipping() *logship.Writer {
+	if v := os.Getenv("LOGSHIP_ENABLED"); v != "true" && v != "1" {
+		return nil
+	}
+	w, err := logship.NewWriter(logship.Config{
+		URL:     os.Getenv("LOGSHIP_URL"),
+		APIKey:  os.Getenv("LOGSHIP_API_KEY"),
+		Service: envOr("LOGSHIP_SERVICE", "omni-metrics"),
+	})
+	if err != nil {
+		log.Printf("logship: disabled (%v)", err)
+		return nil
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, w))
+	return w
+}
+
+func envOr(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
 }
 
 func loadConfig(path string) (*config.Config, error) {

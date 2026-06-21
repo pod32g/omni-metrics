@@ -8,12 +8,15 @@ services:
     container_name: omni-metrics
     restart: unless-stopped
     # Listen on all interfaces inside the container; the host port mapping
-    # controls external exposure. The self-scrape uses loopback (see main.go).
-    command: ["-listen", "0.0.0.0:9090", "-storage", "/data"]
+    # controls external exposure. CLI flags override the config's listen/storage,
+    # so external reachability is guaranteed regardless of the config file.
+    # The config file defines the scrape jobs (self + omni-identity).
+    command: ["-config", "/etc/omni/omni.yml", "-listen", "0.0.0.0:9090", "-storage", "/data"]
     ports:
       - "9090:9090"
     volumes:
       - omni-metrics-data:/data
+      - ./omni.yml:/etc/omni/omni.yml:ro
     healthcheck:
       # Distroless has no shell/curl, so the binary self-probes.
       test: ["CMD", "/omni", "healthcheck", "-url", "http://localhost:9090/-/healthy"]

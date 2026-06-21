@@ -1,0 +1,25 @@
+# omni-metrics runtime configuration.
+# The deploy runs: omni -config /etc/omni/omni.yml -listen 0.0.0.0:9090 -storage /data
+# CLI flags override web.listen / storage.path; scrape jobs are defined here.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+storage:
+  path: /data
+  retention: 24h
+
+web:
+  listen: 0.0.0.0:9090
+
+scrape_configs:
+  # omni-metrics' own /metrics.
+  - job_name: omni-metrics
+    static_configs:
+      - targets: [127.0.0.1:9090]
+
+  # omni-identity — a separate compose project, reached via the host's published
+  # port (8081 -> container 8080). Scraped at /metrics.
+  - job_name: omni-identity
+    static_configs:
+      - targets: [192.168.68.34:8081]

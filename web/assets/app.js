@@ -126,7 +126,8 @@
 
   /* ---------- router ---------- */
   function route() {
-    var name = (location.hash.replace(/^#\/?/, "") || "graph").split("/")[0];
+    var parts = (location.hash.replace(/^#\/?/, "") || "graph").split("/");
+    var name = parts[0];
     document.querySelectorAll("#nav a").forEach(function (a) {
       a.classList.toggle("active", a.getAttribute("data-route") === name);
     });
@@ -135,7 +136,22 @@
     if (name === "targets") renderTargets(view);
     else if (name === "pushers") renderPushers(view);
     else if (name === "status") renderStatus(view);
+    else if (name === "alerts") renderAlerts(view, parts);
     else renderGraph(view);
+  }
+
+  /* ---------- api write helper ---------- */
+  function apiSend(method, path, body) {
+    return fetch(path, {
+      method: method,
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    }).then(function (r) {
+      return r.json().then(function (b) {
+        if (b.status !== "success") throw new Error(b.error || ("HTTP " + r.status));
+        return b.data;
+      });
+    });
   }
 
   /* ---------- graph view ---------- */
@@ -657,6 +673,414 @@
         card("Uptime", up < 3600 ? Math.floor(up / 60) + "m" : (up / 3600).toFixed(1) + "h");
       }
     }).catch(function () {});
+  }
+
+  /* ---------- alerting ---------- */
+  var SEVERITIES = ["critical", "warning", "info"];
+
+  function severityChip(sev) {
+    var s = (sev || "").toLowerCase();
+    var known = SEVERITIES.indexOf(s) >= 0 ? s : "other";
+    return el("span", { class: "sev sev-" + known }, [sev || "—"]);
+  }
+
+  function stateChip(state) {
+    var s = (state || "ok").toLowerCase();
+    return el("span", { class: "astate astate-" + s }, [s]);
+  }
+
+  function durationSince(iso) {
+    var ms = Date.now() - new Date(iso).getTime();
+    if (!isFinite(ms) || ms < 0) ms = 0;
+    var secs = Math.round(ms / 1000);
+    if (secs < 60) return secs + "s";
+    if (secs < 3600) return Math.floor(secs / 60) + "m " + (secs % 60) + "s";
+    if (secs < 86400) return Math.floor(secs / 3600) + "h " + Math.floor((secs % 3600) / 60) + "m";
+    return Math.floor(secs / 86400) + "d " + Math.floor((secs % 86400) / 3600) + "h";
+  }
+
+  function tsText(iso) {
+    var t = new Date(iso).getTime();
+    if (!t) return "—";
+    return new Date(t).toISOString().replace("T", " ").slice(0, 19);
+  }
+
+  function alertsHead(view, sub) {
+    var tabs = [
+      { key: "rules", label: "Rules", hash: "#/alerts" },
+      { key: "active", label: "Active", hash: "#/alerts/active" },
+      { key: "history", label: "History", hash: "#/alerts/history" },
+      { key: "datasources", label: "Datasources", hash: "#/alerts/datasources" },
+    ];
+    var nav = el("div", { class: "tabs alerts-tabs" }, tabs.map(function (t) {
+      var a = el("a", { href: t.hash, class: t.key === sub ? "active" : "" }, [t.label]);
+      return a;
+    }));
+    var actions = el("div", {}, []);
+    if (sub === "rules") {
+      var newBtn = el("a", { class: "run", href: "#/alerts/new" }, ["+ New rule"]);
+      actions.appendChild(newBtn);
+    }
+    view.appendChild(el("div", { class: "page-head" }, [
+      el("div", {}, [el("div", { class: "eyebrow" }, ["Alerting"]), el("h1", {}, ["Alerts"])]),
+      actions,
+    ]));
+    view.appendChild(nav);
+  }
+
+  function alertsError(view, err) {
+    view.appendChild(el("div", { class: "error-banner" }, [String(err.message || err)]));
+  }
+
+  function renderAlerts(view, parts) {
+    var sub = parts[1] || "rules";
+    if (sub === "new") return renderRuleEditor(view, null);
+    if (sub === "edit") return renderRuleEditor(view, parts[2]);
+    alertsHead(view, sub === "edit" ? "rules" : sub);
+    var content = el("div", {}, []);
+    view.appendChild(content);
+    if (sub === "active") renderActiveAlerts(content);
+    else if (sub === "history") renderAlertHistory(content);
+    else if (sub === "datasources") renderDatasources(content);
+    else renderRulesList(content);
+  }
+
+  function ruleStateIndex(active) {
+    // Map rule_id -> worst current state + max value.
+    var idx = {};
+    (active || []).forEach(function (in_) {
+      var cur = idx[in_.rule_id] || { state: "ok", value: null };
+      var rank = { ok: 0, pending: 1, firing: 2 };
+      if ((rank[in_.status] || 0) >= (rank[cur.state] || 0)) {
+        cur.state = in_.status;
+        cur.value = in_.current_value;
+      }
+      idx[in_.rule_id] = cur;
+    });
+    return idx;
+  }
+
+  function renderRulesList(view) {
+    Promise.all([api("/api/v1/alerts"), api("/api/v1/alerts/active")]).then(function (res) {
+      var rules = res[0] || [], idx = ruleStateIndex(res[1] || []);
+      var panel = el("div", { class: "panel" }, [
+        el("div", { class: "col-head" }, [
+          el("span", { style: "flex:1.4" }, ["Rule"]),
+          el("span", { style: "width:90px" }, ["Severity"]),
+          el("span", { style: "width:80px" }, ["State"]),
+          el("span", { style: "width:90px;text-align:right" }, ["Value"]),
+          el("span", { style: "width:70px;text-align:right" }, ["Every"]),
+          el("span", { style: "width:200px;text-align:right;padding-right:8px" }, ["Actions"]),
+        ]),
+      ]);
+      if (!rules.length) panel.appendChild(el("div", { class: "empty" }, ["No alert rules yet — create one."]));
+      rules.forEach(function (r) {
+        var st = idx[r.id] || { state: "ok", value: null };
+        var nameCell = el("span", { style: "flex:1.4" }, [
+          el("div", {}, [el("a", { href: "#/alerts/edit/" + r.id, class: "rule-name" }, [r.name])]),
+          el("div", { class: "mono rule-q" }, [r.promql]),
+        ]);
+        panel.appendChild(el("div", { class: "row" + (r.enabled ? "" : " row-disabled") }, [
+          nameCell,
+          el("span", { style: "width:90px" }, [severityChip(r.severity)]),
+          el("span", { style: "width:80px" }, [stateChip(st.state)]),
+          el("span", { class: "mono", style: "width:90px;text-align:right;display:inline-block" }, [st.value == null ? "—" : fmt(st.value)]),
+          el("span", { class: "mono", style: "width:70px;text-align:right;display:inline-block" }, [r.evaluation_interval_seconds + "s"]),
+          ruleActions(r),
+        ]));
+      });
+      view.appendChild(panel);
+    }).catch(function (e) { alertsError(view, e); });
+  }
+
+  function ruleActions(r) {
+    var wrap = el("span", { class: "act", style: "width:200px;display:inline-flex;gap:6px;justify-content:flex-end" }, []);
+    var evalBtn = el("button", { class: "mini", title: "Evaluate now" }, ["Eval"]);
+    evalBtn.addEventListener("click", function () {
+      apiSend("POST", "/api/v1/alerts/" + r.id + "/evaluate").then(route).catch(alertWindow);
+    });
+    var toggle = el("button", { class: "mini", title: r.enabled ? "Disable" : "Enable" }, [r.enabled ? "Disable" : "Enable"]);
+    toggle.addEventListener("click", function () {
+      apiSend("POST", "/api/v1/alerts/" + r.id + "/" + (r.enabled ? "disable" : "enable")).then(route).catch(alertWindow);
+    });
+    var del = el("button", { class: "mini danger", title: "Delete" }, ["Delete"]);
+    del.addEventListener("click", function () {
+      if (!window.confirm("Delete rule \"" + r.name + "\"? History is retained.")) return;
+      apiSend("DELETE", "/api/v1/alerts/" + r.id).then(route).catch(alertWindow);
+    });
+    wrap.appendChild(evalBtn);
+    wrap.appendChild(toggle);
+    wrap.appendChild(del);
+    return wrap;
+  }
+
+  function alertWindow(err) { window.alert(String(err.message || err)); }
+
+  function renderActiveAlerts(view) {
+    Promise.all([api("/api/v1/alerts/active"), api("/api/v1/alerts")]).then(function (res) {
+      var active = res[0] || [], rules = res[1] || [];
+      var byId = {};
+      rules.forEach(function (r) { byId[r.id] = r; });
+      var firing = active.filter(function (a) { return a.status === "firing"; }).length;
+      view.appendChild(el("div", { class: "summary alerts-summary" }, [
+        el("span", { class: "mono down" }, [firing + " firing"]),
+        el("span", { class: "mono" }, [(active.length - firing) + " pending"]),
+      ]));
+      var panel = el("div", { class: "panel" }, [
+        el("div", { class: "col-head" }, [
+          el("span", { style: "width:80px" }, ["Status"]),
+          el("span", { style: "width:90px" }, ["Severity"]),
+          el("span", { style: "flex:1.4" }, ["Rule"]),
+          el("span", { style: "width:110px;text-align:right" }, ["Value"]),
+          el("span", { style: "width:150px;text-align:right" }, ["Started"]),
+          el("span", { style: "width:110px;text-align:right;padding-right:8px" }, ["Duration"]),
+        ]),
+      ]);
+      if (!active.length) panel.appendChild(el("div", { class: "empty" }, ["No active alerts."]));
+      active.forEach(function (a) {
+        var rule = byId[a.rule_id] || {};
+        panel.appendChild(el("div", { class: "row" }, [
+          el("span", { style: "width:80px" }, [stateChip(a.status)]),
+          el("span", { style: "width:90px" }, [severityChip(rule.severity)]),
+          el("span", { style: "flex:1.4" }, [
+            el("div", {}, [rule.name || a.rule_id]),
+            el("div", { class: "mono rule-q" }, [shortLabels(a.labels || {})]),
+          ]),
+          el("span", { class: "mono", style: "width:110px;text-align:right;display:inline-block" }, [fmt(a.current_value)]),
+          el("span", { class: "mono", style: "width:150px;text-align:right;display:inline-block" }, [tsText(a.started_at)]),
+          el("span", { class: "mono", style: "width:110px;text-align:right;display:inline-block;padding-right:8px" }, [durationSince(a.started_at)]),
+        ]));
+      });
+      view.appendChild(panel);
+    }).catch(function (e) { alertsError(view, e); });
+  }
+
+  function renderAlertHistory(view) {
+    Promise.all([api("/api/v1/alerts/history?limit=200"), api("/api/v1/alerts")]).then(function (res) {
+      var hist = res[0] || [], rules = res[1] || [];
+      var byId = {};
+      rules.forEach(function (r) { byId[r.id] = r; });
+      var panel = el("div", { class: "panel" }, [
+        el("div", { class: "col-head" }, [
+          el("span", { style: "width:160px" }, ["Time"]),
+          el("span", { style: "flex:1.2" }, ["Rule"]),
+          el("span", { style: "width:170px" }, ["Transition"]),
+          el("span", { style: "width:90px;text-align:right" }, ["Value"]),
+          el("span", { style: "flex:1;padding-left:16px" }, ["Reason"]),
+        ]),
+      ]);
+      if (!hist.length) panel.appendChild(el("div", { class: "empty" }, ["No transitions recorded yet."]));
+      // Newest first.
+      hist.slice().reverse().forEach(function (h) {
+        var rule = byId[h.rule_id] || {};
+        panel.appendChild(el("div", { class: "row" }, [
+          el("span", { class: "mono", style: "width:160px" }, [tsText(h.timestamp)]),
+          el("span", { style: "flex:1.2" }, [rule.name || h.rule_id]),
+          el("span", { style: "width:170px" }, [stateChip(h.previous_state), el("span", { class: "arrow" }, ["→"]), stateChip(h.new_state)]),
+          el("span", { class: "mono", style: "width:90px;text-align:right;display:inline-block" }, [fmt(h.value)]),
+          el("span", { style: "flex:1;padding-left:16px" }, [h.reason || ""]),
+        ]));
+      });
+      view.appendChild(panel);
+    }).catch(function (e) { alertsError(view, e); });
+  }
+
+  /* ---------- rule editor ---------- */
+  function renderRuleEditor(view, id) {
+    alertsHead(view, "rules");
+    var form = el("div", { class: "panel editor" }, []);
+    view.appendChild(form);
+
+    Promise.all([
+      api("/api/v1/datasources").catch(function () { return []; }),
+      id ? api("/api/v1/alerts/" + id) : Promise.resolve(null),
+    ]).then(function (res) {
+      var datasources = res[0] || [];
+      var rule = res[1] ? res[1].rule : { name: "", description: "", promql: "", evaluation_interval_seconds: 30, for_duration_seconds: 0, severity: "warning", datasource_id: "", labels: {}, annotations: {}, enabled: true };
+      buildRuleForm(form, rule, datasources, id);
+    }).catch(function (e) { alertsError(form, e); });
+  }
+
+  function field(labelText, control) {
+    return el("label", { class: "field" }, [el("span", { class: "flabel" }, [labelText]), control]);
+  }
+
+  function buildRuleForm(form, rule, datasources, id) {
+    clear(form);
+    var name = el("input", { type: "text", value: rule.name || "", placeholder: "High error rate" });
+    var desc = el("input", { type: "text", value: rule.description || "", placeholder: "Optional description" });
+    var promql = el("textarea", { rows: "3", spellcheck: "false", placeholder: "sum(rate(http_requests_total{status=~\"5..\"}[5m])) > 5" });
+    promql.value = rule.promql || "";
+
+    var dsSel = el("select", {}, datasources.map(function (d) {
+      var o = el("option", { value: d.id }, [d.name + (d.source !== "api" ? " (" + d.source + ")" : "")]);
+      if (d.id === rule.datasource_id) o.setAttribute("selected", "selected");
+      return o;
+    }));
+    if (!datasources.length) dsSel.appendChild(el("option", { value: "" }, ["(default)"]));
+
+    var sevSel = el("select", {}, SEVERITIES.map(function (s) {
+      var o = el("option", { value: s }, [s]);
+      if (s === rule.severity) o.setAttribute("selected", "selected");
+      return o;
+    }));
+    if (SEVERITIES.indexOf(rule.severity) < 0 && rule.severity) {
+      var o = el("option", { value: rule.severity }, [rule.severity]);
+      o.setAttribute("selected", "selected");
+      sevSel.appendChild(o);
+    }
+
+    var interval = el("input", { type: "number", min: "1", value: String(rule.evaluation_interval_seconds || 30) });
+    var forD = el("input", { type: "number", min: "0", value: String(rule.for_duration_seconds || 0) });
+    var enabled = el("input", { type: "checkbox" });
+    if (rule.enabled !== false) enabled.setAttribute("checked", "checked");
+
+    var labelsEd = kvEditor(rule.labels || {});
+    var annEd = kvEditor(rule.annotations || {});
+
+    form.appendChild(field("Name", name));
+    form.appendChild(field("Description", desc));
+    form.appendChild(field("PromQL expression", promql));
+    form.appendChild(el("div", { class: "field-row" }, [
+      field("Datasource", dsSel),
+      field("Severity", sevSel),
+      field("Evaluation interval (s)", interval),
+      field("For duration (s)", forD),
+    ]));
+    form.appendChild(field("Labels", labelsEd.node));
+    form.appendChild(field("Annotations", annEd.node));
+    form.appendChild(el("label", { class: "field toggle" }, [enabled, el("span", {}, ["Enabled"])]));
+
+    var err = el("div", { class: "form-err" }, []);
+    var save = el("button", { class: "run" }, [id ? "Save changes" : "Create rule"]);
+    save.addEventListener("click", function () {
+      clear(err);
+      var body = {
+        name: name.value.trim(),
+        description: desc.value,
+        promql: promql.value.trim(),
+        datasource_id: dsSel.value,
+        severity: sevSel.value,
+        evaluation_interval_seconds: parseInt(interval.value, 10) || 0,
+        for_duration_seconds: parseInt(forD.value, 10) || 0,
+        labels: labelsEd.value(),
+        annotations: annEd.value(),
+        enabled: enabled.checked,
+      };
+      var p = id ? apiSend("PUT", "/api/v1/alerts/" + id, body) : apiSend("POST", "/api/v1/alerts", body);
+      p.then(function () { location.hash = "#/alerts"; }).catch(function (e) {
+        err.appendChild(el("span", {}, [String(e.message || e)]));
+      });
+    });
+    var cancel = el("a", { class: "mini", href: "#/alerts" }, ["Cancel"]);
+    form.appendChild(el("div", { class: "form-actions" }, [save, cancel, err]));
+  }
+
+  // kvEditor builds a dynamic key/value editor seeded from obj.
+  function kvEditor(obj) {
+    var rows = el("div", { class: "kv-rows" }, []);
+    function addRow(k, v) {
+      var key = el("input", { type: "text", value: k || "", placeholder: "key", class: "kv-key" });
+      var val = el("input", { type: "text", value: v || "", placeholder: "value", class: "kv-val" });
+      var rm = el("button", { class: "mini danger", title: "Remove" }, ["×"]);
+      var row = el("div", { class: "kv-row" }, [key, val, rm]);
+      rm.addEventListener("click", function () { rows.removeChild(row); });
+      rows.appendChild(row);
+    }
+    Object.keys(obj || {}).forEach(function (k) { addRow(k, obj[k]); });
+    var add = el("button", { class: "mini", type: "button" }, ["+ Add"]);
+    add.addEventListener("click", function () { addRow("", ""); });
+    var node = el("div", { class: "kv" }, [rows, add]);
+    return {
+      node: node,
+      value: function () {
+        var out = {};
+        rows.querySelectorAll(".kv-row").forEach(function (r) {
+          var k = r.querySelector(".kv-key").value.trim();
+          var v = r.querySelector(".kv-val").value;
+          if (k) out[k] = v;
+        });
+        return out;
+      },
+    };
+  }
+
+  /* ---------- datasources ---------- */
+  function renderDatasources(view) {
+    api("/api/v1/datasources").then(function (list) {
+      list = list || [];
+      var panel = el("div", { class: "panel" }, [
+        el("div", { class: "col-head" }, [
+          el("span", { style: "flex:1" }, ["Name"]),
+          el("span", { style: "flex:1.4" }, ["URL"]),
+          el("span", { style: "width:90px" }, ["Auth"]),
+          el("span", { style: "width:90px" }, ["Source"]),
+          el("span", { style: "width:160px;text-align:right;padding-right:8px" }, ["Actions"]),
+        ]),
+      ]);
+      list.forEach(function (d) {
+        var acts = el("span", { style: "width:160px;display:inline-flex;gap:6px;justify-content:flex-end" }, []);
+        var test = el("button", { class: "mini" }, ["Test"]);
+        test.addEventListener("click", function () {
+          apiSend("POST", "/api/v1/datasources/" + d.id + "/test")
+            .then(function () { window.alert("Datasource OK"); })
+            .catch(alertWindow);
+        });
+        acts.appendChild(test);
+        if (d.source === "api") {
+          var del = el("button", { class: "mini danger" }, ["Delete"]);
+          del.addEventListener("click", function () {
+            if (!window.confirm("Delete datasource \"" + d.name + "\"?")) return;
+            apiSend("DELETE", "/api/v1/datasources/" + d.id).then(route).catch(alertWindow);
+          });
+          acts.appendChild(del);
+        } else {
+          acts.appendChild(el("span", { class: "mono", "data-dim": "1", style: "align-self:center" }, ["read-only"]));
+        }
+        panel.appendChild(el("div", { class: "row" }, [
+          el("span", { style: "flex:1" }, [d.name]),
+          el("span", { class: "mono", style: "flex:1.4" }, [d.base_url]),
+          el("span", { style: "width:90px" }, [d.auth_type]),
+          el("span", { style: "width:90px" }, [d.source]),
+          acts,
+        ]));
+      });
+      view.appendChild(panel);
+      view.appendChild(datasourceCreator());
+    }).catch(function (e) { alertsError(view, e); });
+  }
+
+  function datasourceCreator() {
+    var name = el("input", { type: "text", placeholder: "remote-prometheus" });
+    var url = el("input", { type: "text", placeholder: "https://prom.example" });
+    var authSel = el("select", {}, ["none", "bearer", "basic"].map(function (a) { return el("option", { value: a }, [a]); }));
+    var cred = el("input", { type: "password", placeholder: "bearer token / password" });
+    var user = el("input", { type: "text", placeholder: "basic user (basic only)" });
+    var timeout = el("input", { type: "number", min: "1", value: "30000" });
+    var err = el("div", { class: "form-err" }, []);
+    var add = el("button", { class: "run" }, ["Add datasource"]);
+    add.addEventListener("click", function () {
+      clear(err);
+      var body = {
+        name: name.value.trim(),
+        type: "prometheus",
+        base_url: url.value.trim(),
+        auth_type: authSel.value,
+        timeout_ms: parseInt(timeout.value, 10) || 30000,
+        enabled: true,
+      };
+      if (authSel.value === "bearer") body.credentials = cred.value;
+      if (authSel.value === "basic") { body.basic_user = user.value; body.basic_pass = cred.value; }
+      apiSend("POST", "/api/v1/datasources", body).then(route).catch(function (e) {
+        err.appendChild(el("span", {}, [String(e.message || e)]));
+      });
+    });
+    return el("div", { class: "panel editor" }, [
+      el("div", { class: "panel-title" }, ["Add a datasource"]),
+      el("div", { class: "field-row" }, [field("Name", name), field("URL", url)]),
+      el("div", { class: "field-row" }, [field("Auth", authSel), field("Credential", cred), field("Basic user", user), field("Timeout (ms)", timeout)]),
+      el("div", { class: "form-actions" }, [add, err]),
+    ]);
   }
 
   /* ---------- boot ---------- */

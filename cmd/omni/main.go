@@ -13,9 +13,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/pod32g/omni-metrics/internal/alerts"
+	"github.com/pod32g/omni-metrics/internal/alerts/models"
 	"github.com/pod32g/omni-metrics/internal/api"
 	"github.com/pod32g/omni-metrics/internal/config"
 	"github.com/pod32g/omni-metrics/internal/logship"
@@ -114,8 +117,28 @@ func main() {
 		go retentionLoop(ctx, db, ret)
 	}
 
+	// Alerting engine (optional). Self-contained: queries datasources over HTTP,
+	// persists to its own SQLite store, and runs a per-rule scheduler.
+	var alertSvc *alerts.Service
+	if cfg.Alerting.IsEnabled() {
+		dss, defaultDS := buildAlertDatasources(cfg)
+		svc, err := alerts.NewService(alerts.Options{
+			StorePath:         alertStorePath(cfg),
+			Datasources:       dss,
+			DefaultDatasource: defaultDS,
+			Now:               time.Now,
+		})
+		if err != nil {
+			log.Fatalf("alerting: %v", err)
+		}
+		alertSvc = svc
+		go svc.Start(ctx)
+		defer svc.Stop()
+		log.Printf("alerting engine enabled (store: %s, %d datasource(s))", alertStorePath(cfg), len(dss))
+	}
+
 	// HTTP server: API + embedded console.
-	handler := api.New(api.Options{
+	apiOpts := api.Options{
 		Engine:      promql.NewEngine(db),
 		Storage:     db,
 		Targets:     mgr,
@@ -129,7 +152,12 @@ func main() {
 			MaxBodyBytes: cfg.Push.BodyLimit(),
 			AuthToken:    cfg.Push.AuthToken,
 		},
-	})
+	}
+	if alertSvc != nil {
+		apiOpts.AlertHandler = alertSvc.Handler()
+		apiOpts.ExtraCollectors = []func(io.Writer){alertSvc.Collector()}
+	}
+	handler := api.New(apiOpts)
 	srv := &http.Server{
 		Addr:              cfg.Web.Listen,
 		Handler:           handler,
@@ -214,6 +242,79 @@ func toAuth(sc config.ScrapeConfig) scrape.Auth {
 		return scrape.Auth{BasicUser: b.Username, BasicPass: b.Password, HasBasic: true}
 	}
 	return scrape.Auth{}
+}
+
+// alertStorePath resolves where the alerting SQLite database lives: an explicit
+// alerting.storage_path wins; otherwise it sits alongside the WAL data dir, or
+// is in-memory when storage is in-memory.
+func alertStorePath(cfg *config.Config) string {
+	if cfg.Alerting.StoragePath != "" {
+		return cfg.Alerting.StoragePath
+	}
+	if cfg.Storage.Path != "" {
+		return filepath.Join(cfg.Storage.Path, "alerts.db")
+	}
+	return ":memory:"
+}
+
+// buildAlertDatasources maps the config datasources to the engine's model and
+// prepends a builtin "local" datasource (pointing at omni's own listen address)
+// unless the config already defines one named "local". It returns the
+// datasources and the resolved default datasource name.
+func buildAlertDatasources(cfg *config.Config) ([]models.Datasource, string) {
+	defaultName := cfg.Alerting.DefaultDatasource
+	if defaultName == "" {
+		defaultName = "local"
+	}
+	out := make([]models.Datasource, 0, len(cfg.Alerting.Datasources)+1)
+	haveLocal := false
+	for _, d := range cfg.Alerting.Datasources {
+		if d.Name == "local" {
+			haveLocal = true
+		}
+		out = append(out, alertDatasourceFromConfig(d))
+	}
+	if !haveLocal {
+		out = append([]models.Datasource{builtinLocalDatasource(cfg.Web.Listen)}, out...)
+	}
+	return out, defaultName
+}
+
+func builtinLocalDatasource(listen string) models.Datasource {
+	return models.Datasource{
+		ID:        "local",
+		Name:      "local",
+		Type:      "prometheus",
+		BaseURL:   "http://" + selfScrapeTarget(listen),
+		AuthType:  models.AuthNone,
+		TimeoutMS: int(config.DefaultAlertDatasourceTimeout / time.Millisecond),
+		Enabled:   true,
+		Source:    models.SourceBuiltin,
+	}
+}
+
+func alertDatasourceFromConfig(d config.AlertDatasourceConfig) models.Datasource {
+	out := models.Datasource{
+		ID:        d.Name, // config datasource ids are their (unique) names; stable across boots
+		Name:      d.Name,
+		Type:      d.Type,
+		BaseURL:   d.URL,
+		Headers:   d.Headers,
+		TimeoutMS: int(d.Timeout.D() / time.Millisecond),
+		Enabled:   d.IsEnabled(),
+		Source:    models.SourceConfig,
+		AuthType:  models.AuthNone,
+	}
+	switch {
+	case d.Authorization != nil && d.Authorization.Credentials != "":
+		out.AuthType = models.AuthBearer
+		out.Credentials = d.Authorization.Credentials
+	case d.BasicAuth != nil && (d.BasicAuth.Username != "" || d.BasicAuth.Password != ""):
+		out.AuthType = models.AuthBasic
+		out.BasicUser = d.BasicAuth.Username
+		out.BasicPass = d.BasicAuth.Password
+	}
+	return out
 }
 
 func retentionLoop(ctx context.Context, db *tsdb.DB, retention time.Duration) {

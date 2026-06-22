@@ -77,3 +77,59 @@ scrape_configs:
 		t.Errorf("job app auth = %+v", got[1].Auth)
 	}
 }
+
+func TestBuildAlertDatasourcesAddsBuiltinLocal(t *testing.T) {
+	cfg := config.Default()
+	cfg.Web.Listen = "0.0.0.0:9090"
+	dss, def := buildAlertDatasources(cfg)
+	if def != "local" {
+		t.Errorf("default = %q, want local", def)
+	}
+	var local *struct{ url, source string }
+	for _, d := range dss {
+		if d.Name == "local" {
+			local = &struct{ url, source string }{d.BaseURL, d.Source}
+		}
+	}
+	if local == nil {
+		t.Fatal("builtin local datasource missing")
+	}
+	if local.url != "http://127.0.0.1:9090" {
+		t.Errorf("local base_url = %q, want loopback rewrite", local.url)
+	}
+	if local.source != "builtin" {
+		t.Errorf("local source = %q, want builtin", local.source)
+	}
+}
+
+func TestBuildAlertDatasourcesMapsConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.Web.Listen = "127.0.0.1:9090"
+	cfg.Alerting.Datasources = []config.AlertDatasourceConfig{{
+		Name:          "remote",
+		Type:          "prometheus",
+		URL:           "https://prom.example",
+		Timeout:       config.Duration(5 * time.Second),
+		Authorization: &config.Authorization{Credentials: "tok"},
+		Headers:       map[string]string{"X-Scope-OrgID": "t"},
+	}}
+	dss, _ := buildAlertDatasources(cfg)
+	var remote bool
+	for _, d := range dss {
+		if d.Name == "remote" {
+			remote = true
+			if d.BaseURL != "https://prom.example" || d.TimeoutMS != 5000 {
+				t.Errorf("remote mapping = %+v", d)
+			}
+			if string(d.AuthType) != "bearer" || d.Credentials != "tok" {
+				t.Errorf("remote auth = %v/%q", d.AuthType, d.Credentials)
+			}
+			if d.Source != "config" || d.Headers["X-Scope-OrgID"] != "t" {
+				t.Errorf("remote source/headers = %+v", d)
+			}
+		}
+	}
+	if !remote {
+		t.Fatal("remote datasource missing")
+	}
+}

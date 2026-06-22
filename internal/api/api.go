@@ -7,6 +7,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"runtime"
@@ -41,6 +42,12 @@ type Options struct {
 	Push        Pusher
 	PushSources PushSourcesProvider
 	PushConfig  PushConfig
+	// AlertHandler, when set, serves the alerting engine's REST routes under
+	// /api/v1/alerts and /api/v1/datasources.
+	AlertHandler http.Handler
+	// ExtraCollectors are additional /metrics writers (e.g. the alert engine's),
+	// appended after the core self-metrics.
+	ExtraCollectors []func(io.Writer)
 }
 
 // API is the HTTP handler for the omni-metrics server.
@@ -84,6 +91,14 @@ func (a *API) routes() {
 	if a.opts.PushConfig.Enabled && a.opts.Push != nil {
 		a.mux.HandleFunc("POST /api/v1/push", a.handlePush)
 		a.mux.HandleFunc("GET /api/v1/push/sources", a.handlePushSources)
+	}
+	// Alerting routes (rules + datasources) delegate to the alert engine's
+	// handler. Registered before the "/api/" not-found catch-all so they win.
+	if a.opts.AlertHandler != nil {
+		a.mux.Handle("/api/v1/alerts", a.opts.AlertHandler)
+		a.mux.Handle("/api/v1/alerts/", a.opts.AlertHandler)
+		a.mux.Handle("/api/v1/datasources", a.opts.AlertHandler)
+		a.mux.Handle("/api/v1/datasources/", a.opts.AlertHandler)
 	}
 	a.mux.HandleFunc("/-/healthy", a.handleHealth)
 	a.mux.HandleFunc("/-/ready", a.handleHealth)
@@ -319,6 +334,9 @@ func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	a.self.IncHTTP("metrics")
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	a.self.WriteExposition(w)
+	for _, c := range a.opts.ExtraCollectors {
+		c(w)
+	}
 }
 
 func methodNotAllowed(w http.ResponseWriter) {

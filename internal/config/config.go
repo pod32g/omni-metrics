@@ -5,6 +5,8 @@
 package config
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"os"
 	"regexp"
@@ -92,6 +94,37 @@ func (p PushConfig) BodyLimit() int64 {
 		return p.MaxBodyBytes
 	}
 	return DefaultPushBodyBytes
+}
+
+// Build constructs a *tls.Config from the file paths and options. A nil receiver
+// returns (nil, nil) — no custom TLS. CA/cert/key files are read here.
+func (t *TLSConfig) Build() (*tls.Config, error) {
+	if t == nil {
+		return nil, nil
+	}
+	cfg := &tls.Config{
+		ServerName:         t.ServerName,
+		InsecureSkipVerify: t.InsecureSkipVerify,
+	}
+	if t.CAFile != "" {
+		pem, err := os.ReadFile(t.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("tls ca_file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("tls ca_file %q: no certificates found", t.CAFile)
+		}
+		cfg.RootCAs = pool
+	}
+	if t.CertFile != "" {
+		cert, err := tls.LoadX509KeyPair(t.CertFile, t.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("tls cert/key: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+	}
+	return cfg, nil
 }
 
 // ScrapeConfig is one scrape job.

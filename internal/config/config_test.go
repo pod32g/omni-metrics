@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -232,5 +233,45 @@ scrape_configs:
 		if _, err := LoadBytes([]byte(y)); err == nil {
 			t.Errorf("%s: expected validation error", name)
 		}
+	}
+}
+
+func TestResolveSecrets(t *testing.T) {
+	t.Setenv("TOK", "envtok")
+	dir := t.TempDir()
+	pwFile := dir + "/pw"
+	if err := os.WriteFile(pwFile, []byte("filepw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `
+scrape_configs:
+  - job_name: id
+    authorization: {credentials: "Bearer-${TOK}"}
+    static_configs: [{targets: [h:1]}]
+  - job_name: app
+    basic_auth: {username: u, password_file: ` + pwFile + `}
+    static_configs: [{targets: [h:2]}]
+`
+	c, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if got := c.ScrapeConfigs[0].Authorization.Credentials; got != "Bearer-envtok" {
+		t.Errorf("credentials = %q, want Bearer-envtok", got)
+	}
+	if got := c.ScrapeConfigs[1].BasicAuth.Password; got != "filepw" {
+		t.Errorf("password from file = %q, want filepw (trimmed)", got)
+	}
+}
+
+func TestResolveSecretsUnsetEnvErrors(t *testing.T) {
+	yaml := `
+scrape_configs:
+  - job_name: id
+    authorization: {credentials: "${DEFINITELY_UNSET_TOKEN}"}
+    static_configs: [{targets: [h:1]}]
+`
+	if _, err := LoadBytes([]byte(yaml)); err == nil {
+		t.Fatal("expected error for unset env var in credentials")
 	}
 }

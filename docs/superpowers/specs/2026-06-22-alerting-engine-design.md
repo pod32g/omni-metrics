@@ -107,9 +107,12 @@ Per evaluation, per series:
 **Correctness rules (adversarial-review-minded):**
 
 - A query / HTTP / auth / timeout / invalid-PromQL failure **does not resolve**
-  alerts. Prior state is held; the failure is recorded (history `reason` +
-  `omni_alert_evaluation_failures_total{reason}`). Resolving on a transient outage
-  would be a false "all clear".
+  alerts. Prior state is held; the failure surfaces via the evaluation `Outcome`
+  → `omni_alert_evaluation_failures_total{reason}` + a structured log. Failures
+  are **not** written to `alert_history` — history stays strictly a state-
+  transition log (the clean event feed Omni-Notify consumes); operational
+  failure telemetry lives in metrics/logs. Resolving on a transient outage would
+  be a false "all clear".
 - **Restart recovery:** the active set is loaded from SQLite on boot; `active_at`
   timers resume, so PENDING windows and FIRING state survive restarts.
 - **Per-rule active-instance cap** (default 1000) guards against a high-cardinality

@@ -69,9 +69,39 @@ func (p PushConfig) BodyLimit() int64 {
 // ScrapeConfig is one scrape job.
 type ScrapeConfig struct {
 	JobName        string         `yaml:"job_name"`
+	Scheme         string         `yaml:"scheme"`
 	ScrapeInterval Duration       `yaml:"scrape_interval"`
 	ScrapeTimeout  Duration       `yaml:"scrape_timeout"`
 	StaticConfigs  []StaticConfig `yaml:"static_configs"`
+	Authorization  *Authorization `yaml:"authorization"`
+	BasicAuth      *BasicAuth     `yaml:"basic_auth"`
+	TLS            *TLSConfig     `yaml:"tls_config"`
+}
+
+// Authorization is the Prometheus bearer-style auth block. The rendered header
+// is "<Type> <credentials>" (Type defaults to Bearer).
+type Authorization struct {
+	Type            string `yaml:"type"`
+	Credentials     string `yaml:"credentials"`
+	CredentialsFile string `yaml:"credentials_file"`
+}
+
+// BasicAuth carries HTTP basic-auth credentials.
+type BasicAuth struct {
+	Username     string `yaml:"username"`
+	UsernameFile string `yaml:"username_file"`
+	Password     string `yaml:"password"`
+	PasswordFile string `yaml:"password_file"`
+}
+
+// TLSConfig configures the scrape transport's TLS. File fields are paths; their
+// contents are read when the HTTP client is built (see Build).
+type TLSConfig struct {
+	CAFile             string `yaml:"ca_file"`
+	CertFile           string `yaml:"cert_file"`
+	KeyFile            string `yaml:"key_file"`
+	ServerName         string `yaml:"server_name"`
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
 }
 
 // StaticConfig is a static list of target addresses.

@@ -145,3 +145,34 @@ func TestDefaultEnablesPush(t *testing.T) {
 		t.Error("Default() push should be enabled")
 	}
 }
+
+func TestLoadBytesParsesAuthAndTLS(t *testing.T) {
+	yaml := `
+scrape_configs:
+  - job_name: id
+    scheme: https
+    authorization:
+      type: Bearer
+      credentials: tok123
+    tls_config:
+      ca_file: /etc/ca.pem
+      server_name: id.internal
+      insecure_skip_verify: true
+    static_configs:
+      - targets: [id:8081]
+`
+	c, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	sc := c.ScrapeConfigs[0]
+	if sc.Scheme != "https" {
+		t.Errorf("scheme = %q, want https", sc.Scheme)
+	}
+	if sc.Authorization == nil || sc.Authorization.Credentials != "tok123" || sc.Authorization.Type != "Bearer" {
+		t.Errorf("authorization = %+v", sc.Authorization)
+	}
+	if sc.TLS == nil || sc.TLS.CAFile != "/etc/ca.pem" || !sc.TLS.InsecureSkipVerify || sc.TLS.ServerName != "id.internal" {
+		t.Errorf("tls_config = %+v", sc.TLS)
+	}
+}

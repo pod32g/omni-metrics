@@ -275,3 +275,26 @@ scrape_configs:
 		t.Fatal("expected error for unset env var in credentials")
 	}
 }
+
+func TestTLSConfigBuild(t *testing.T) {
+	// nil receiver → nil config, no error.
+	var none *TLSConfig
+	if cfg, err := none.Build(); err != nil || cfg != nil {
+		t.Fatalf("nil.Build() = %v, %v; want nil,nil", cfg, err)
+	}
+
+	tc := &TLSConfig{ServerName: "id.internal", InsecureSkipVerify: true}
+	cfg, err := tc.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if cfg == nil || cfg.ServerName != "id.internal" || !cfg.InsecureSkipVerify {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+
+	// A bad CA path is an error.
+	bad := &TLSConfig{CAFile: "/no/such/ca.pem"}
+	if _, err := bad.Build(); err == nil {
+		t.Errorf("expected error for missing ca_file")
+	}
+}

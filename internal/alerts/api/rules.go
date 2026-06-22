@@ -56,6 +56,9 @@ func (h *handler) createRule(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if req.DatasourceID == "" {
+		req.DatasourceID = h.d.DefaultDatasourceID
+	}
 	if msg := h.validateRule(r, &req); msg != "" {
 		writeErr(w, http.StatusBadRequest, "bad_data", msg)
 		return
@@ -93,6 +96,9 @@ func (h *handler) updateRule(w http.ResponseWriter, r *http.Request) {
 	var req ruleRequest
 	if !decodeJSON(w, r, &req) {
 		return
+	}
+	if req.DatasourceID == "" {
+		req.DatasourceID = h.d.DefaultDatasourceID
 	}
 	if msg := h.validateRule(r, &req); msg != "" {
 		writeErr(w, http.StatusBadRequest, "bad_data", msg)

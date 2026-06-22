@@ -34,6 +34,9 @@ type Deps struct {
 	TestDatasource func(ctx context.Context, ds models.Datasource) error
 	OnRulesChanged func()
 	Now            func() time.Time
+	// DefaultDatasourceID is applied to a rule that is created/updated without an
+	// explicit datasource_id.
+	DefaultDatasourceID string
 }
 
 type handler struct {

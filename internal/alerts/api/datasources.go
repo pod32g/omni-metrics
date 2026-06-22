@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/pod32g/omni-metrics/internal/alerts/models"
@@ -162,6 +163,15 @@ func validateDatasource(req *datasourceRequest) string {
 	}
 	if strings.TrimSpace(req.BaseURL) == "" {
 		return "base_url is required"
+	}
+	if u, err := url.Parse(strings.TrimSpace(req.BaseURL)); err != nil {
+		return "base_url is not a valid URL"
+	} else if u.Scheme != "http" && u.Scheme != "https" {
+		return "base_url must be an http(s) URL"
+	} else if u.User != nil {
+		// Credentials in the URL would be echoed back in responses/errors; require
+		// the dedicated auth fields instead.
+		return "base_url must not embed credentials; use auth_type + credentials"
 	}
 	switch normalizeAuth(req.AuthType) {
 	case models.AuthNone, models.AuthBearer, models.AuthBasic:

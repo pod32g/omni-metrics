@@ -58,13 +58,13 @@ func (p *prometheus) Query(ctx context.Context, promql string, ts time.Time) (mo
 	form.Set("query", promql)
 	form.Set("time", strconv.FormatFloat(float64(ts.UnixMilli())/1000, 'f', -1, 64))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	// POST form so long queries don't hit URL length limits (Grafana does this
+	// too). Passing the body to NewRequestWithContext sets ContentLength and
+	// GetBody, so the body survives redirects.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return models.Result{}, err
 	}
-	// POST form so long queries don't hit URL length limits (Grafana does this too).
-	req.URL.RawQuery = ""
-	req.Body = io.NopCloser(strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	p.applyAuth(req)

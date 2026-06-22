@@ -97,9 +97,13 @@ func (m *Metrics) WriteExposition(w io.Writer) {
 	fmt.Fprintf(w, "# TYPE omni_alert_state_transitions_total counter\n")
 	fmt.Fprintf(w, "omni_alert_state_transitions_total %d\n", m.transitions)
 
-	fmt.Fprintf(w, "# HELP omni_alert_evaluation_duration_seconds Cumulative evaluation duration.\n")
+	// Emit _sum and _count as independent counter families, each with its own
+	// HELP/TYPE referencing the exact series name (strict parsers reject HELP/TYPE
+	// whose name does not match an emitted series).
+	fmt.Fprintf(w, "# HELP omni_alert_evaluation_duration_seconds_sum Cumulative evaluation duration in seconds.\n")
 	fmt.Fprintf(w, "# TYPE omni_alert_evaluation_duration_seconds_sum counter\n")
 	fmt.Fprintf(w, "omni_alert_evaluation_duration_seconds_sum %s\n", f(m.durSum))
+	fmt.Fprintf(w, "# HELP omni_alert_evaluation_duration_seconds_count Number of evaluations measured.\n")
 	fmt.Fprintf(w, "# TYPE omni_alert_evaluation_duration_seconds_count counter\n")
 	fmt.Fprintf(w, "omni_alert_evaluation_duration_seconds_count %d\n", m.durCount)
 

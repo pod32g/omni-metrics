@@ -52,6 +52,21 @@ func TestMetricsExposition(t *testing.T) {
 	if !strings.Contains(out, "omni_alert_evaluation_duration_seconds_sum 0.25") {
 		t.Errorf("missing duration sum 0.25\n%s", out)
 	}
+	// HELP/TYPE names must match the emitted series exactly (strict-parser safe).
+	for _, w := range []string{
+		"# HELP omni_alert_evaluation_duration_seconds_sum",
+		"# TYPE omni_alert_evaluation_duration_seconds_sum counter",
+		"# HELP omni_alert_evaluation_duration_seconds_count",
+		"# TYPE omni_alert_evaluation_duration_seconds_count counter",
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("exposition missing %q\n%s", w, out)
+		}
+	}
+	// The bare (series-less) duration name must NOT get a stray HELP/TYPE.
+	if strings.Contains(out, "TYPE omni_alert_evaluation_duration_seconds counter") {
+		t.Errorf("stray TYPE for series-less duration name\n%s", out)
+	}
 }
 
 func TestMetricsConcurrent(t *testing.T) {

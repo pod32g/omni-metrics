@@ -226,6 +226,29 @@ Reuses the existing `Authorization` / `BasicAuth` env-expansion + `_file` machin
 - **api/**: every endpoint incl. 404/405/409/validation.
 - **metrics/**: exposition format + counter/gauge correctness.
 
+## Known limitations / deferrals
+
+Surfaced by the adversarial review (2026-06-22); triaged as acceptable for this
+milestone:
+
+- **History growth under label churn.** `alert_history` is append-only and never
+  auto-pruned (by design — it is the audit/event log). A rule whose result series
+  fully rotate every evaluation (high-cardinality `instance`/`pod` labels) writes a
+  RESOLVED transition per vanished series per tick, so history grows unbounded even
+  though the per-rule *active-instance* cap holds. The cap bounds the active set and
+  memory, not history. **Deferred:** a history-retention/pruning policy (e.g.
+  `alerting.history_retention`) — a follow-up feature, not a correctness bug.
+- **`POST /api/v1/alerts/evaluate` (all) reports only a count.** Per-rule failures
+  are metered (`omni_alert_evaluation_failures_total`) and logged, but the
+  synchronous bulk endpoint returns `{"evaluated": N}` without a per-rule failure
+  breakdown. Single-rule `/{id}/evaluate` does surface its error. **Deferred:**
+  richer bulk-evaluation reporting.
+- **In-memory store throughput.** The default config-less run uses an in-memory
+  SQLite store with `SetMaxOpenConns(1)`; access is serialized (safe, no deadlock —
+  verified under `-race` with concurrent goroutines) but slower than a file store.
+  Production deployments set `storage.path`, which puts `alerts.db` on disk in WAL
+  mode. No change needed.
+
 ## Non-goals (explicit)
 
 No notification delivery, routing, escalation, silences, maintenance windows, HA

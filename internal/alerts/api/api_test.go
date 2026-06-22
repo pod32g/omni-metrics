@@ -251,6 +251,12 @@ func TestDatasourceCRUDAndReadOnly(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("test ds = %d", w.Code)
 	}
+
+	// base_url with embedded credentials is rejected (would leak in responses).
+	w = do(t, h, "POST", "/api/v1/datasources", `{"name":"leaky","base_url":"http://user:pw@prom","auth_type":"none"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("base_url with userinfo = %d, want 400", w.Code)
+	}
 }
 
 func TestMethodNotAllowed(t *testing.T) {
@@ -258,6 +264,25 @@ func TestMethodNotAllowed(t *testing.T) {
 	w := do(t, h, "DELETE", "/api/v1/alerts", "")
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("DELETE /alerts = %d, want 405", w.Code)
+	}
+}
+
+func TestUnknownSubpathReturnsJSON404(t *testing.T) {
+	h, _, _ := testHandler(t)
+	for _, path := range []string{"/api/v1/alerts/abc/bogus", "/api/v1/datasources/x/y/z"} {
+		w := do(t, h, "GET", path, "")
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s = %d, want 404", path, w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("%s content-type = %q, want application/json (not SPA/plaintext)", path, ct)
+		}
+		var env struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil || env.Status != "error" {
+			t.Errorf("%s body not a JSON error envelope: %s", path, w.Body.String())
+		}
 	}
 }
 

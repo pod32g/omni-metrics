@@ -119,6 +119,26 @@ func TestSchedulerSlowRuleDoesNotBlockOthers(t *testing.T) {
 	}
 }
 
+func TestSchedulerRestartAfterStop(t *testing.T) {
+	c := newCounters()
+	s := newSched(func(_ context.Context, id string) { c.inc(id) })
+	s.Start(context.Background())
+	s.Reconcile([]models.Rule{rule("a", 15)})
+	time.Sleep(40 * time.Millisecond)
+	s.Stop()
+
+	// A Reconcile after Stop (even without an explicit Start) must re-arm
+	// evaluation against a fresh context, not stay silently dead on the
+	// already-cancelled root.
+	s.Reconcile([]models.Rule{rule("a", 15)})
+	before := c.get("a")
+	time.Sleep(80 * time.Millisecond)
+	if c.get("a") <= before {
+		t.Errorf("scheduler did not resume after Stop+Start: %d -> %d", before, c.get("a"))
+	}
+	s.Stop()
+}
+
 func TestSchedulerStopIsPromptAndClean(t *testing.T) {
 	c := newCounters()
 	s := newSched(func(_ context.Context, id string) { c.inc(id) })

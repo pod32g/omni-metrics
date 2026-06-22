@@ -79,7 +79,43 @@ func (h *handler) routes() {
 	h.mux.HandleFunc("POST /api/v1/datasources/{id}/test", h.testDatasource)
 }
 
-func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.mux.ServeHTTP(w, r) }
+// ServeHTTP delegates to the mux but rewrites the mux's default *plaintext* 404
+// into the JSON error envelope, preserving the API's envelope invariant for
+// unknown subpaths. The mux's automatic 405 (method mismatch on a known path) is
+// left untouched. Our own handlers' 404s already set Content-Type=application/
+// json, so they pass through unchanged.
+func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.mux.ServeHTTP(&jsonNotFound{ResponseWriter: w, path: r.URL.Path}, r)
+}
+
+// jsonNotFound intercepts a default-mux 404 (text/plain) and replaces it with a
+// JSON error envelope.
+type jsonNotFound struct {
+	http.ResponseWriter
+	path        string
+	intercepted bool
+}
+
+func (j *jsonNotFound) WriteHeader(code int) {
+	ct := j.ResponseWriter.Header().Get("Content-Type")
+	if code == http.StatusNotFound && (ct == "" || !hasJSONPrefix(ct)) {
+		j.intercepted = true
+		writeErr(j.ResponseWriter, http.StatusNotFound, "not_found", "unknown alerting path "+j.path)
+		return
+	}
+	j.ResponseWriter.WriteHeader(code)
+}
+
+func (j *jsonNotFound) Write(b []byte) (int, error) {
+	if j.intercepted {
+		return len(b), nil // swallow the mux's "404 page not found" body
+	}
+	return j.ResponseWriter.Write(b)
+}
+
+func hasJSONPrefix(ct string) bool {
+	return len(ct) >= 16 && ct[:16] == "application/json"
+}
 
 // --- envelope ---
 

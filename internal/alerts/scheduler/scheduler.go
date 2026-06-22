@@ -108,13 +108,17 @@ func (s *Scheduler) loop(ctx context.Context, id string, interval time.Duration)
 	}
 }
 
-// Stop cancels all rule goroutines and waits for them to exit.
+// Stop cancels all rule goroutines and waits for them to exit. It resets the
+// root context so a later Start or Reconcile re-arms cleanly rather than
+// deriving from the already-cancelled root (a silent "never ticks" trap).
 func (s *Scheduler) Stop() {
 	s.mu.Lock()
 	if s.cancel != nil {
 		s.cancel()
 	}
 	s.running = map[string]*task{}
+	s.ctx = nil
+	s.cancel = nil
 	s.mu.Unlock()
 	s.wg.Wait()
 }

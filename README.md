@@ -82,6 +82,45 @@ scrape_configs:
 
 Durations accept `s m h d w y` units (e.g. `15s`, `90s`, `2h`, `7d`).
 
+### Secure scraping
+
+Scrape jobs can authenticate and use TLS with a Prometheus-shaped surface:
+
+```yaml
+scrape_configs:
+  - job_name: omni-identity
+    scheme: https                       # http (default) | https
+    authorization:                      # bearer auth
+      type: Bearer                      # header type; default Bearer
+      credentials: ${OMNI_IDENTITY_TOKEN}
+      # credentials_file: /run/secrets/token
+    # basic_auth:                       # mutually exclusive with authorization
+    #   username: scraper
+    #   password_file: /run/secrets/pw
+    tls_config:
+      ca_file: /etc/ssl/ca.pem          # custom CA; omit for system roots
+      cert_file: /etc/ssl/client.pem    # mTLS: cert + key together
+      key_file:  /etc/ssl/client.key
+      server_name: omni-identity.internal
+      insecure_skip_verify: false       # last resort; prefer ca_file
+    static_configs:
+      - targets: [omni-identity:8081]
+```
+
+Secrets reach the scraper three ways, so they need never be committed:
+
+- **Inline** — a literal value (fine for non-secret fields).
+- **`${ENV}` expansion** — `${VAR}` or `${VAR:-default}` in any credential or
+  file-path field. A `${VAR}` that is referenced but unset (with no default) is a
+  **load error** — the scraper fails loudly rather than authenticating with an
+  empty token.
+- **`<field>_file`** — read the secret from a file (Docker secrets, mounted
+  volumes). A field and its `_file` twin set together is a config error.
+
+`authorization` and `basic_auth` are mutually exclusive, as are `cert_file`
+without `key_file`. Secrets and certificates are resolved once at startup;
+rotating a token or certificate requires a restart.
+
 ## API
 
 Responses use Prometheus' envelope: `{"status":"success","data":{...}}` or

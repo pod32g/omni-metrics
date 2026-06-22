@@ -19,7 +19,11 @@ scrape_configs:
       - targets: [127.0.0.1:9090]
 
   # omni-identity — a separate compose project, reached via the host's published
-  # port (8081 -> container 8080). Scraped at /metrics.
+  # port (8081 -> container 8080). Its /metrics requires a bearer token; the
+  # value comes from the OMNI_IDENTITY_TOKEN env (CI secret / host env), never
+  # committed. Same-host hop, so plain http is acceptable here.
   - job_name: omni-identity
+    authorization:
+      credentials: ${OMNI_IDENTITY_TOKEN}
     static_configs:
       - targets: [192.168.68.34:8081]

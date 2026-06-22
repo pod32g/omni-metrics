@@ -38,6 +38,9 @@ jobs:
           SVC: omni-metrics
           VOL: omni-metrics-data
           PORT: "9090"
+          # Bearer token for the omni-identity /metrics scrape. Set as a repo
+          # secret; reaches the container via docker-compose's environment block.
+          OMNI_IDENTITY_TOKEN: ${{ secrets.OMNI_IDENTITY_TOKEN }}
         run: |
           set -euo pipefail
           DEST="$HOME/omni-metrics"

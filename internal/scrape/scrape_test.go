@@ -53,7 +53,7 @@ go_goroutines 42
 
 	db := newDB(t)
 	m := NewManager(db, 0)
-	tgt, err := normalizeTarget("test", srv.URL+"/metrics")
+	tgt, err := normalizeTarget("test", srv.URL+"/metrics", "http")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestScrapeDownTargetMarksUpZero(t *testing.T) {
 
 	db := newDB(t)
 	m := NewManager(db, 0)
-	tgt, _ := normalizeTarget("test", srv.URL+"/metrics")
+	tgt, _ := normalizeTarget("test", srv.URL+"/metrics", "http")
 	m.scrapeOnce(context.Background(), tgt, time.Second)
 
 	if v, ok := latest(t, db, "up", ""); !ok || v != 0 {
@@ -111,7 +111,7 @@ func TestSampleLimitRejectsScrape(t *testing.T) {
 
 	db := newDB(t)
 	m := NewManager(db, 2) // limit below the 4 exposed series
-	tgt, _ := normalizeTarget("test", srv.URL+"/metrics")
+	tgt, _ := normalizeTarget("test", srv.URL+"/metrics", "http")
 	m.scrapeOnce(context.Background(), tgt, time.Second)
 
 	if _, ok := latest(t, db, "a", ""); ok {
@@ -133,7 +133,7 @@ func TestHeadCapMarksTargetDown(t *testing.T) {
 
 	db, _ := tsdb.Open(tsdb.Options{MaxSeries: 2}) // head fills before all series fit
 	m := NewManager(db, 0)
-	tgt, _ := normalizeTarget("test", srv.URL+"/metrics")
+	tgt, _ := normalizeTarget("test", srv.URL+"/metrics", "http")
 	m.scrapeOnce(context.Background(), tgt, time.Second)
 
 	h := m.Targets()
@@ -153,7 +153,7 @@ func TestScrapeSurfacesParseError(t *testing.T) {
 
 	db := newDB(t)
 	m := NewManager(db, 0)
-	tgt, _ := normalizeTarget("test", srv.URL+"/metrics")
+	tgt, _ := normalizeTarget("test", srv.URL+"/metrics", "http")
 	m.scrapeOnce(context.Background(), tgt, time.Second)
 
 	h := m.Targets()
@@ -179,7 +179,7 @@ func TestScrapeBodyTooLarge(t *testing.T) {
 	db := newDB(t)
 	m := NewManager(db, 0)
 	m.maxBodyBytes = 100 // far below the served body
-	tgt, _ := normalizeTarget("test", srv.URL+"/metrics")
+	tgt, _ := normalizeTarget("test", srv.URL+"/metrics", "http")
 	m.scrapeOnce(context.Background(), tgt, time.Second)
 
 	h := m.Targets()
@@ -198,7 +198,7 @@ func TestNormalizeTarget(t *testing.T) {
 		{"http://node-01:9100/custom", "node-01:9100"},
 	}
 	for _, tc := range cases {
-		tg, err := normalizeTarget("job", tc.in)
+		tg, err := normalizeTarget("job", tc.in, "http")
 		if err != nil {
 			t.Fatalf("normalizeTarget(%q): %v", tc.in, err)
 		}
@@ -231,5 +231,44 @@ func TestManagerRunCancels(t *testing.T) {
 	}
 	if v, ok := latest(t, db, "x", ""); !ok || v != 1 {
 		t.Errorf("expected at least one scrape to have ingested x=1, got %v %v", v, ok)
+	}
+}
+
+func TestScrapeSendsBearer(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Write([]byte("x 1\n"))
+	}))
+	defer srv.Close()
+
+	db := newDB(t)
+	m := NewManager(db, 0)
+	tgt, _ := normalizeTarget("test", srv.URL+"/metrics", "http")
+	tgt.auth = Auth{Type: "Bearer", Credentials: "tok123"}
+	m.scrapeOnce(context.Background(), tgt, time.Second)
+
+	if gotAuth != "Bearer tok123" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer tok123")
+	}
+}
+
+func TestScrapeSendsBasicAuth(t *testing.T) {
+	var u, p string
+	var ok bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, p, ok = r.BasicAuth()
+		w.Write([]byte("x 1\n"))
+	}))
+	defer srv.Close()
+
+	db := newDB(t)
+	m := NewManager(db, 0)
+	tgt, _ := normalizeTarget("test", srv.URL+"/metrics", "http")
+	tgt.auth = Auth{BasicUser: "user", BasicPass: "pass", HasBasic: true}
+	m.scrapeOnce(context.Background(), tgt, time.Second)
+
+	if !ok || u != "user" || p != "pass" {
+		t.Errorf("basic auth = %q/%q (ok=%v), want user/pass", u, p, ok)
 	}
 }

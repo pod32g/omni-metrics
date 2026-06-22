@@ -9,6 +9,7 @@ package scrape
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,11 +33,36 @@ type Appendable interface {
 	Appender() tsdb.Appender
 }
 
+// Auth is the resolved per-job request authentication. Credentials (with Type,
+// default Bearer) sets an Authorization header; HasBasic sends HTTP basic auth.
+type Auth struct {
+	Type        string
+	Credentials string
+	BasicUser   string
+	BasicPass   string
+	HasBasic    bool
+}
+
+func (a Auth) apply(req *http.Request) {
+	switch {
+	case a.Credentials != "":
+		typ := a.Type
+		if typ == "" {
+			typ = "Bearer"
+		}
+		req.Header.Set("Authorization", typ+" "+a.Credentials)
+	case a.HasBasic:
+		req.SetBasicAuth(a.BasicUser, a.BasicPass)
+	}
+}
+
 // Target is a single resolved scrape endpoint.
 type Target struct {
 	Job      string
 	Instance string
 	URL      string
+	auth     Auth
+	client   *http.Client
 }
 
 // TargetHealth is a snapshot of a target's last scrape, for /api/v1/targets.
@@ -51,12 +77,16 @@ type TargetHealth struct {
 	SamplesScraped  int       `json:"samplesScraped"`
 }
 
-// ScrapeConfig is one job: a set of targets sharing an interval and timeout.
+// ScrapeConfig is one job: a set of targets sharing an interval, timeout, and
+// transport (scheme, auth, TLS).
 type ScrapeConfig struct {
 	JobName  string
+	Scheme   string
 	Interval time.Duration
 	Timeout  time.Duration
 	Targets  []string
+	Auth     Auth
+	TLS      *tls.Config
 }
 
 // Manager runs scrape loops and tracks target health.
@@ -94,12 +124,24 @@ func (m *Manager) Run(ctx context.Context, configs []ScrapeConfig) {
 		if timeout <= 0 || timeout > interval {
 			timeout = interval
 		}
+		client := m.client
+		if cfg.TLS != nil {
+			tr := http.DefaultTransport.(*http.Transport).Clone()
+			tr.TLSClientConfig = cfg.TLS
+			client = &http.Client{Transport: tr}
+		}
+		scheme := cfg.Scheme
+		if scheme == "" {
+			scheme = "http"
+		}
 		for _, raw := range cfg.Targets {
-			tgt, err := normalizeTarget(cfg.JobName, raw)
+			tgt, err := normalizeTarget(cfg.JobName, raw, scheme)
 			if err != nil {
 				m.recordError(cfg.JobName, raw, fmt.Sprintf("invalid target: %v", err))
 				continue
 			}
+			tgt.auth = cfg.Auth
+			tgt.client = client
 			wg.Add(1)
 			go func(tgt Target) {
 				defer wg.Done()
@@ -193,7 +235,12 @@ func (m *Manager) fetchAndParse(ctx context.Context, tgt Target, timeout time.Du
 		return nil, err, nil
 	}
 	req.Header.Set("Accept", "text/plain;version=0.0.4")
-	resp, err := m.client.Do(req)
+	tgt.auth.apply(req)
+	client := tgt.client
+	if client == nil {
+		client = m.client
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err, nil
 	}
@@ -275,10 +322,13 @@ func healthKey(job, instance string) string { return job + "\x00" + instance }
 // normalizeTarget resolves a raw target string into a Target. A bare host:port
 // gets an http scheme and the default /metrics path; the instance is the
 // host:port authority.
-func normalizeTarget(job, raw string) (Target, error) {
+func normalizeTarget(job, raw, scheme string) (Target, error) {
+	if scheme == "" {
+		scheme = "http"
+	}
 	s := raw
 	if !strings.Contains(s, "://") {
-		s = "http://" + s
+		s = scheme + "://" + s
 	}
 	u, err := url.Parse(s)
 	if err != nil {

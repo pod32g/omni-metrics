@@ -99,8 +99,12 @@ func main() {
 	defer stop()
 
 	// Scraper.
+	scrapeCfgs, err := toScrapeConfigs(cfg)
+	if err != nil {
+		log.Fatalf("scrape config: %v", err)
+	}
 	mgr := scrape.NewManager(db, 0)
-	go mgr.Run(ctx, toScrapeConfigs(cfg))
+	go mgr.Run(ctx, scrapeCfgs)
 
 	// Push ingestion: clients that cannot be scraped POST samples here.
 	ingester := push.NewIngester(db, cfg.Push.SampleLimit)
@@ -180,17 +184,36 @@ func loadConfig(path string) (*config.Config, error) {
 	return config.Load(path)
 }
 
-func toScrapeConfigs(cfg *config.Config) []scrape.ScrapeConfig {
+func toScrapeConfigs(cfg *config.Config) ([]scrape.ScrapeConfig, error) {
 	out := make([]scrape.ScrapeConfig, 0, len(cfg.ScrapeConfigs))
 	for _, sc := range cfg.ScrapeConfigs {
+		tlsCfg, err := sc.TLS.Build()
+		if err != nil {
+			return nil, fmt.Errorf("scrape config %q: %w", sc.JobName, err)
+		}
 		out = append(out, scrape.ScrapeConfig{
 			JobName:  sc.JobName,
+			Scheme:   sc.Scheme,
 			Interval: sc.ScrapeInterval.D(),
 			Timeout:  sc.ScrapeTimeout.D(),
 			Targets:  sc.AllTargets(),
+			Auth:     toAuth(sc),
+			TLS:      tlsCfg,
 		})
 	}
-	return out
+	return out, nil
+}
+
+// toAuth maps a config scrape job's auth block to the scrape layer's resolved
+// Auth. Credentials take precedence; basic auth is used when present.
+func toAuth(sc config.ScrapeConfig) scrape.Auth {
+	if a := sc.Authorization; a != nil && a.Credentials != "" {
+		return scrape.Auth{Type: a.Type, Credentials: a.Credentials}
+	}
+	if b := sc.BasicAuth; b != nil && (b.Username != "" || b.Password != "") {
+		return scrape.Auth{BasicUser: b.Username, BasicPass: b.Password, HasBasic: true}
+	}
+	return scrape.Auth{}
 }
 
 func retentionLoop(ctx context.Context, db *tsdb.DB, retention time.Duration) {

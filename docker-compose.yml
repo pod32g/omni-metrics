@@ -19,6 +19,9 @@ services:
       LOGSHIP_URL: ${LOGSHIP_URL:-}
       LOGSHIP_API_KEY: ${LOGSHIP_API_KEY:-}
       LOGSHIP_SERVICE: ${LOGSHIP_SERVICE:-omni-metrics}
+      # omni-identity /metrics bearer token (secret → host env / CI secret),
+      # referenced as ${OMNI_IDENTITY_TOKEN} by the omni-identity scrape job.
+      OMNI_IDENTITY_TOKEN: ${OMNI_IDENTITY_TOKEN:-}
     ports:
       - "9090:9090"
     volumes:

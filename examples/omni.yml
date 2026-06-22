@@ -55,3 +55,32 @@ push:
   sample_limit: 0          # max samples per request; 0 = unlimited
   max_body_bytes: 16777216 # 16 MiB request-body cap
   auth_token: ""           # when set, requires "Authorization: Bearer <token>"
+
+# Alerting engine: evaluates PromQL alert rules against Prometheus-compatible
+# datasources, runs the OK->PENDING->FIRING->RESOLVED state machine, and persists
+# rules/state/history to a SQLite database. It does NOT send notifications —
+# delivery is a separate concern (Omni-Notify) that consumes the events feed.
+alerting:
+  enabled: true                       # default true; set false to disable entirely
+  # SQLite database path. Defaults to <storage.path>/alerts.db, or in-memory when
+  # storage is in-memory.
+  storage_path: ""
+  # Datasource applied to rules that omit one. Defaults to the builtin "local".
+  default_datasource: local
+  datasources:
+    # A builtin "local" datasource pointing at this server is auto-registered, so
+    # this block is optional. Define one named "local" here to override its URL.
+    # Datasources defined in config are read-only via the API.
+    # - name: remote-prometheus
+    #   type: prometheus
+    #   url: https://prometheus.internal:9090
+    #   timeout: 30s
+    #   # Auth reuses the scrape auth shapes; secrets via ${ENV} or *_file.
+    #   authorization:
+    #     credentials: ${PROM_TOKEN}
+    #   # basic_auth:                 # mutually exclusive with authorization
+    #   #   username: alertmgr
+    #   #   password_file: /run/secrets/prom_pw
+    #   headers:
+    #     X-Scope-OrgID: tenant-a     # e.g. Mimir/Cortex multi-tenancy
+    #   enabled: true

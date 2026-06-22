@@ -27,6 +27,11 @@ light themes.
   `offset`/`@` and subqueries; and a broad function library including
   `rate`/`irate`/`increase`/`delta`/`deriv`/`predict_linear`, `histogram_quantile`,
   `label_replace`/`label_join`, math, and time functions.
+- **Alerting engine**: PromQL alert rules evaluated against any
+  Prometheus-compatible datasource, an `OK→PENDING→FIRING→RESOLVED` state machine,
+  append-only history, a per-rule scheduler, a SQLite store, and an **Alerts**
+  console — detection only, with an events feed for a future notifier. (See
+  [Alerting](#alerting).)
 - **Grafana-compatible**: works as a drop-in **Prometheus data source** — GET+POST
   query endpoints, `status/buildinfo`, `metadata`, `match[]` label filtering, and a
   Prometheus JSON envelope. (See [Grafana](#grafana).)
@@ -168,6 +173,53 @@ Make sure omni is reachable from Grafana: bind a routable address with
 `http://host.docker.internal:9090`). The query endpoints accept Grafana's default
 `POST` method, so no data-source tweaks are needed.
 
+## Alerting
+
+A built-in, provider-agnostic alerting engine evaluates PromQL alert rules,
+manages alert state, and persists history. It **detects and tracks** alerts — it
+does **not** send notifications. Delivery (Discord/Slack/Email/Telegram/Webhooks),
+routing, escalation, and silences belong to a separate service (Omni-Notify),
+which consumes the events feed below.
+
+- **Datasources** — rules evaluate against any Prometheus-compatible HTTP API.
+  A builtin `local` datasource points at omni itself; add more in the `alerting:`
+  config block (read-only via the API) or at runtime via the datasource API
+  (none / bearer / basic auth, custom headers, per-datasource timeout).
+- **Rules** store the complete PromQL alert expression (the comparison lives in
+  the query, e.g. `up == 0` or `sum(rate(http_requests_total{status=~"5.."}[5m])) > 5`).
+  Each result series becomes its own alert instance.
+- **State machine** — `OK → PENDING → FIRING → RESOLVED`. A rule fires once its
+  condition has held for the `for` duration. A datasource failure **never**
+  resolves an alert (no false "all clear"); state survives restarts.
+- **Scheduler** — one goroutine per rule at its own interval, so a slow
+  datasource never blocks others.
+
+```sh
+# Create a rule (omitting datasource_id uses the default "local" datasource)
+curl -XPOST http://127.0.0.1:9090/api/v1/alerts -H 'Content-Type: application/json' -d '{
+  "name":"High error rate",
+  "promql":"sum(rate(omni_http_requests_total[5m])) > 5",
+  "evaluation_interval_seconds":15, "for_duration_seconds":300, "severity":"critical"
+}'
+
+curl http://127.0.0.1:9090/api/v1/alerts            # list rules
+curl http://127.0.0.1:9090/api/v1/alerts/active     # firing + pending instances
+curl http://127.0.0.1:9090/api/v1/alerts/history    # state-transition log
+curl 'http://127.0.0.1:9090/api/v1/alerts/events?since=0'  # machine feed for Omni-Notify
+```
+
+Full surface: `GET/POST /api/v1/alerts`, `GET/PUT/DELETE /api/v1/alerts/{id}`,
+`POST /api/v1/alerts/{id}/enable|disable|evaluate`, `POST /api/v1/alerts/evaluate`,
+`GET /api/v1/alerts/active|history|events`, and datasource CRUD under
+`/api/v1/datasources` (+ `/{id}/test`). The **Alerts** console page manages rules,
+shows active alerts and history, and edits datasources. Engine metrics
+(`omni_alert_rules_total`, `omni_alerts_active`, `omni_alerts_pending`,
+`omni_alert_evaluations_total`, `omni_alert_evaluation_failures_total`,
+`omni_alert_state_transitions_total`, `omni_alert_evaluation_duration_seconds_*`)
+are exposed at `/metrics`. Rules, state, and history persist to a SQLite database
+(`<storage.path>/alerts.db` by default); **history is append-only and never
+auto-deleted**. Configure via the `alerting:` block — see `examples/omni.yml`.
+
 ## Architecture
 
 ```
@@ -190,6 +242,7 @@ Make sure omni is reachable from Grafana: bind a routable address with
 | `internal/push` | JSON push ingestion + per-source health |
 | `internal/config` | YAML config + validation |
 | `internal/api` | HTTP handlers + self-instrumentation |
+| `internal/alerts` | Alerting engine: datasource, state machine, SQLite store, evaluator, scheduler, API, metrics |
 | `web` | Embedded console (HTML/CSS/JS) |
 | `cmd/omni` | Wiring + graceful shutdown |
 
@@ -205,9 +258,9 @@ go test ./... -race
 
 ## Roadmap (deferred from M1)
 
-M2 on-disk blocks + retention/compaction · M4 recording/alerting rules ·
-M5 service discovery · M6 remote-write/federation · later: auth/TLS, clustering,
-native histograms.
+M2 on-disk blocks + retention/compaction · M4 **alerting shipped** (recording
+rules still deferred) · M5 service discovery · M6 remote-write/federation ·
+later: auth/TLS, clustering, native histograms.
 
 (M3 — deeper PromQL + `histogram_quantile` — is largely delivered as part of
 Grafana compatibility.)

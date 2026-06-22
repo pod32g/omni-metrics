@@ -57,7 +57,39 @@ type Config struct {
 	Web           WebConfig      `yaml:"web"`
 	ScrapeConfigs []ScrapeConfig `yaml:"scrape_configs"`
 	Push          PushConfig     `yaml:"push"`
+	Alerting      AlertingConfig `yaml:"alerting"`
 }
+
+// AlertingConfig configures the built-in alerting engine. Enabled is a *bool so
+// an omitted block defaults to enabled (nil) rather than false.
+type AlertingConfig struct {
+	Enabled           *bool                   `yaml:"enabled"`
+	StoragePath       string                  `yaml:"storage_path"`
+	DefaultDatasource string                  `yaml:"default_datasource"`
+	Datasources       []AlertDatasourceConfig `yaml:"datasources"`
+}
+
+// IsEnabled reports whether the alerting engine should run (default true).
+func (a AlertingConfig) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
+
+// AlertDatasourceConfig is one config-defined alert datasource. It reuses the
+// scrape auth shapes (Authorization / BasicAuth) for credential resolution.
+type AlertDatasourceConfig struct {
+	Name          string            `yaml:"name"`
+	Type          string            `yaml:"type"`
+	URL           string            `yaml:"url"`
+	Timeout       Duration          `yaml:"timeout"`
+	Authorization *Authorization    `yaml:"authorization"`
+	BasicAuth     *BasicAuth        `yaml:"basic_auth"`
+	Headers       map[string]string `yaml:"headers"`
+	Enabled       *bool             `yaml:"enabled"`
+}
+
+// IsEnabled reports whether the datasource is enabled (default true).
+func (d AlertDatasourceConfig) IsEnabled() bool { return d.Enabled == nil || *d.Enabled }
+
+// DefaultAlertDatasourceTimeout is applied when a datasource omits a timeout.
+const DefaultAlertDatasourceTimeout = 30 * time.Second
 
 // GlobalConfig holds defaults applied to scrape jobs that omit their own.
 type GlobalConfig struct {
@@ -246,6 +278,27 @@ func (c *Config) resolveSecrets() error {
 			}
 		}
 	}
+	for i := range c.Alerting.Datasources {
+		ds := &c.Alerting.Datasources[i]
+		if a := ds.Authorization; a != nil {
+			v, err := resolveSecret("authorization.credentials", a.Credentials, a.CredentialsFile)
+			if err != nil {
+				return fmt.Errorf("alerting datasource %q: %w", ds.Name, err)
+			}
+			a.Credentials = v
+		}
+		if b := ds.BasicAuth; b != nil {
+			u, err := resolveSecret("basic_auth.username", b.Username, b.UsernameFile)
+			if err != nil {
+				return fmt.Errorf("alerting datasource %q: %w", ds.Name, err)
+			}
+			p, err := resolveSecret("basic_auth.password", b.Password, b.PasswordFile)
+			if err != nil {
+				return fmt.Errorf("alerting datasource %q: %w", ds.Name, err)
+			}
+			b.Username, b.Password = u, p
+		}
+	}
 	return nil
 }
 
@@ -301,6 +354,15 @@ func (c *Config) applyDefaults() {
 			sc.ScrapeTimeout = c.Global.ScrapeTimeout
 		}
 	}
+	for i := range c.Alerting.Datasources {
+		ds := &c.Alerting.Datasources[i]
+		if ds.Type == "" {
+			ds.Type = "prometheus"
+		}
+		if ds.Timeout == 0 {
+			ds.Timeout = Duration(DefaultAlertDatasourceTimeout)
+		}
+	}
 }
 
 func (c *Config) validate() error {
@@ -340,6 +402,32 @@ func (c *Config) validate() error {
 		if tc := sc.TLS; tc != nil && (tc.CertFile == "") != (tc.KeyFile == "") {
 			return fmt.Errorf("scrape config %q: tls_config cert_file and key_file must be set together", sc.JobName)
 		}
+	}
+	if err := c.validateAlerting(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Config) validateAlerting() error {
+	seen := map[string]bool{}
+	for _, ds := range c.Alerting.Datasources {
+		if ds.Name == "" {
+			return fmt.Errorf("alerting datasource: name must not be empty")
+		}
+		if seen[ds.Name] {
+			return fmt.Errorf("alerting datasource: duplicate name %q", ds.Name)
+		}
+		seen[ds.Name] = true
+		if ds.URL == "" {
+			return fmt.Errorf("alerting datasource %q: url is required", ds.Name)
+		}
+		if ds.Authorization != nil && ds.BasicAuth != nil {
+			return fmt.Errorf("alerting datasource %q: authorization and basic_auth are mutually exclusive", ds.Name)
+		}
+	}
+	if d := c.Alerting.DefaultDatasource; d != "" && len(c.Alerting.Datasources) > 0 && !seen[d] {
+		return fmt.Errorf("alerting: default_datasource %q is not a configured datasource", d)
 	}
 	return nil
 }

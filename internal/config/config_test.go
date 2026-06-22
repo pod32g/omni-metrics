@@ -316,3 +316,98 @@ func TestExpandEnvEmptyIsLoud(t *testing.T) {
 		t.Errorf("expandEnv(${SET_EMPTY:-}) = %q, %v; want empty", got, err)
 	}
 }
+
+func TestLoadBytesParsesAlerting(t *testing.T) {
+	t.Setenv("ALERT_TOKEN", "sekret")
+	yamlDoc := `
+alerting:
+  enabled: true
+  storage_path: /data/alerts.db
+  default_datasource: local
+  datasources:
+    - name: local
+      type: prometheus
+      url: http://127.0.0.1:9090
+      timeout: 20s
+    - name: remote
+      url: https://prom.example
+      authorization:
+        credentials: ${ALERT_TOKEN}
+      headers:
+        X-Scope-OrgID: tenant-a
+scrape_configs:
+  - job_name: omni
+    static_configs:
+      - targets: [127.0.0.1:9090]
+`
+	c, err := LoadBytes([]byte(yamlDoc))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if !c.Alerting.IsEnabled() {
+		t.Error("alerting should be enabled")
+	}
+	if c.Alerting.StoragePath != "/data/alerts.db" || c.Alerting.DefaultDatasource != "local" {
+		t.Errorf("alerting top-level = %+v", c.Alerting)
+	}
+	if len(c.Alerting.Datasources) != 2 {
+		t.Fatalf("datasources = %d, want 2", len(c.Alerting.Datasources))
+	}
+	local := c.Alerting.Datasources[0]
+	if local.Name != "local" || local.Type != "prometheus" || local.Timeout.D() != 20*time.Second {
+		t.Errorf("local datasource = %+v", local)
+	}
+	remote := c.Alerting.Datasources[1]
+	if remote.Type != "prometheus" { // defaulted
+		t.Errorf("remote type = %q, want defaulted prometheus", remote.Type)
+	}
+	if remote.Authorization == nil || remote.Authorization.Credentials != "sekret" {
+		t.Errorf("remote credentials not resolved: %+v", remote.Authorization)
+	}
+	if remote.Headers["X-Scope-OrgID"] != "tenant-a" {
+		t.Errorf("remote headers = %+v", remote.Headers)
+	}
+}
+
+func TestAlertingDefaultsEnabled(t *testing.T) {
+	c, err := LoadBytes([]byte("scrape_configs:\n  - job_name: omni\n    static_configs:\n      - targets: [127.0.0.1:9090]\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if !c.Alerting.IsEnabled() {
+		t.Error("alerting should default to enabled when omitted")
+	}
+}
+
+func TestAlertingRejectsDuplicateDatasourceNames(t *testing.T) {
+	yamlDoc := `
+alerting:
+  datasources:
+    - name: dup
+      url: http://a
+    - name: dup
+      url: http://b
+scrape_configs:
+  - job_name: omni
+    static_configs:
+      - targets: [127.0.0.1:9090]
+`
+	if _, err := LoadBytes([]byte(yamlDoc)); err == nil {
+		t.Error("expected duplicate datasource name error")
+	}
+}
+
+func TestAlertingRejectsDatasourceWithoutURL(t *testing.T) {
+	yamlDoc := `
+alerting:
+  datasources:
+    - name: x
+scrape_configs:
+  - job_name: omni
+    static_configs:
+      - targets: [127.0.0.1:9090]
+`
+	if _, err := LoadBytes([]byte(yamlDoc)); err == nil {
+		t.Error("expected missing-url error")
+	}
+}

@@ -27,6 +27,27 @@ scrape_configs:
   #   static_configs:
   #     - targets: [node-01:9100, node-02:9100]
 
+  # Secure scrape: a target whose /metrics requires a bearer token, over HTTPS.
+  # Secrets are never committed — use ${ENV} expansion or *_file references.
+  # - job_name: omni-identity
+  #   scheme: https
+  #   authorization:
+  #     credentials: ${OMNI_IDENTITY_TOKEN}   # or credentials_file: /run/secrets/token
+  #   tls_config:
+  #     ca_file: /etc/ssl/ca.pem              # omit to use system roots
+  #     server_name: omni-identity.internal
+  #     # insecure_skip_verify: true          # last resort; prefer ca_file
+  #   static_configs:
+  #     - targets: [omni-identity:8081]
+  #
+  # Basic auth instead of bearer (mutually exclusive with authorization):
+  # - job_name: legacy
+  #   basic_auth:
+  #     username: scraper
+  #     password_file: /run/secrets/pw
+  #   static_configs:
+  #     - targets: [legacy:9100]
+
 # Push ingestion: clients that cannot be scraped POST JSON samples to
 # /api/v1/push. Append semantics (each push builds the time series).
 push:

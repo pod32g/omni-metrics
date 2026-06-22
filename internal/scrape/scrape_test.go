@@ -2,6 +2,8 @@ package scrape
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -270,5 +272,67 @@ func TestScrapeSendsBasicAuth(t *testing.T) {
 
 	if !ok || u != "user" || p != "pass" {
 		t.Errorf("basic auth = %q/%q (ok=%v), want user/pass", u, p, ok)
+	}
+}
+
+// waitForUp polls until an up sample exists or a short deadline passes.
+func waitForUp(t *testing.T, db *tsdb.DB) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := latest(t, db, "up", ""); ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestScrapeTLSVerifiesWithCA(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("x 1\n"))
+	}))
+	defer srv.Close()
+
+	// Trust the test server's self-signed cert via a CA pool.
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+
+	db := newDB(t)
+	m := NewManager(db, 0)
+	cfg := ScrapeConfig{
+		JobName: "tls",
+		Targets: []string{srv.URL},
+		TLS:     &tls.Config{RootCAs: pool},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx, []ScrapeConfig{cfg})
+	waitForUp(t, db)
+	cancel()
+
+	if v, ok := latest(t, db, "up", ""); !ok || v != 1 {
+		t.Errorf("up = %v %v, want 1 over verified TLS", v, ok)
+	}
+}
+
+func TestScrapeTLSInsecureSkipVerify(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("x 1\n"))
+	}))
+	defer srv.Close()
+
+	db := newDB(t)
+	m := NewManager(db, 0)
+	cfg := ScrapeConfig{
+		JobName: "tls",
+		Targets: []string{srv.URL},
+		TLS:     &tls.Config{InsecureSkipVerify: true},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx, []ScrapeConfig{cfg})
+	waitForUp(t, db)
+	cancel()
+
+	if v, ok := latest(t, db, "up", ""); !ok || v != 1 {
+		t.Errorf("up = %v %v, want 1 with insecure_skip_verify", v, ok)
 	}
 }

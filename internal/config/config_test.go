@@ -176,3 +176,30 @@ scrape_configs:
 		t.Errorf("tls_config = %+v", sc.TLS)
 	}
 }
+
+func TestExpandEnv(t *testing.T) {
+	t.Setenv("TOK", "secret")
+	cases := []struct {
+		in, want string
+		wantErr  bool
+	}{
+		{in: "plain", want: "plain"},
+		{in: "${TOK}", want: "secret"},
+		{in: "Bearer ${TOK}", want: "Bearer secret"},
+		{in: "${MISSING:-def}", want: "def"},
+		{in: "${TOK:-def}", want: "secret"},
+		{in: "${MISSING}", wantErr: true},
+	}
+	for _, c := range cases {
+		got, err := expandEnv(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("expandEnv(%q): expected error", c.in)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("expandEnv(%q) = %q, %v; want %q", c.in, got, err, c.want)
+		}
+	}
+}

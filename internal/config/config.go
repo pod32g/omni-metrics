@@ -7,11 +7,38 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// envRef matches ${VAR} or ${VAR:-default}.
+var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}`)
+
+// expandEnv replaces ${VAR} / ${VAR:-default} references. A reference to an unset
+// variable with no default is an error — fail loud rather than scrape with an
+// empty credential.
+func expandEnv(s string) (string, error) {
+	var bad string
+	out := envRef.ReplaceAllStringFunc(s, func(m string) string {
+		g := envRef.FindStringSubmatch(m)
+		name, hasDef, def := g[1], g[2] != "", g[3]
+		if v, ok := os.LookupEnv(name); ok {
+			return v
+		}
+		if hasDef {
+			return def
+		}
+		bad = name
+		return ""
+	})
+	if bad != "" {
+		return "", fmt.Errorf("environment variable %q is not set", bad)
+	}
+	return out, nil
+}
 
 // DefaultListen is the address the web/API server binds when unspecified. It
 // binds loopback only — exposing the server is an explicit choice, not a default.

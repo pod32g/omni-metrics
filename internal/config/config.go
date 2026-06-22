@@ -219,6 +219,26 @@ func (c *Config) validate() error {
 		if total == 0 {
 			return fmt.Errorf("scrape config %q: at least one target required", sc.JobName)
 		}
+		if sc.Scheme != "" && sc.Scheme != "http" && sc.Scheme != "https" {
+			return fmt.Errorf("scrape config %q: scheme must be http or https", sc.JobName)
+		}
+		if sc.Authorization != nil && sc.BasicAuth != nil {
+			return fmt.Errorf("scrape config %q: authorization and basic_auth are mutually exclusive", sc.JobName)
+		}
+		if a := sc.Authorization; a != nil && a.Credentials != "" && a.CredentialsFile != "" {
+			return fmt.Errorf("scrape config %q: authorization credentials and credentials_file are mutually exclusive", sc.JobName)
+		}
+		if b := sc.BasicAuth; b != nil {
+			if b.Password != "" && b.PasswordFile != "" {
+				return fmt.Errorf("scrape config %q: basic_auth password and password_file are mutually exclusive", sc.JobName)
+			}
+			if b.Username != "" && b.UsernameFile != "" {
+				return fmt.Errorf("scrape config %q: basic_auth username and username_file are mutually exclusive", sc.JobName)
+			}
+		}
+		if tc := sc.TLS; tc != nil && (tc.CertFile == "") != (tc.KeyFile == "") {
+			return fmt.Errorf("scrape config %q: tls_config cert_file and key_file must be set together", sc.JobName)
+		}
 	}
 	return nil
 }

@@ -203,3 +203,34 @@ func TestExpandEnv(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateAuthRules(t *testing.T) {
+	cases := map[string]string{
+		"bad scheme": `
+scrape_configs:
+  - job_name: x
+    scheme: ftp
+    static_configs: [{targets: [h:1]}]`,
+		"auth and basic_auth": `
+scrape_configs:
+  - job_name: x
+    authorization: {credentials: a}
+    basic_auth: {username: u, password: p}
+    static_configs: [{targets: [h:1]}]`,
+		"credentials and credentials_file": `
+scrape_configs:
+  - job_name: x
+    authorization: {credentials: a, credentials_file: /f}
+    static_configs: [{targets: [h:1]}]`,
+		"cert without key": `
+scrape_configs:
+  - job_name: x
+    tls_config: {cert_file: /c}
+    static_configs: [{targets: [h:1]}]`,
+	}
+	for name, y := range cases {
+		if _, err := LoadBytes([]byte(y)); err == nil {
+			t.Errorf("%s: expected validation error", name)
+		}
+	}
+}

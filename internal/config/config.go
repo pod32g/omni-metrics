@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -169,7 +170,71 @@ func LoadBytes(b []byte) (*Config, error) {
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
+	if err := c.resolveSecrets(); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// resolveSecrets env-expands inline credential values and reads any *_file
+// credential references into their inline fields. TLS file paths are expanded
+// here too but read later, when the scrape client is built.
+func (c *Config) resolveSecrets() error {
+	for i := range c.ScrapeConfigs {
+		sc := &c.ScrapeConfigs[i]
+		if a := sc.Authorization; a != nil {
+			v, err := resolveSecret("authorization.credentials", a.Credentials, a.CredentialsFile)
+			if err != nil {
+				return fmt.Errorf("scrape config %q: %w", sc.JobName, err)
+			}
+			a.Credentials = v
+		}
+		if b := sc.BasicAuth; b != nil {
+			u, err := resolveSecret("basic_auth.username", b.Username, b.UsernameFile)
+			if err != nil {
+				return fmt.Errorf("scrape config %q: %w", sc.JobName, err)
+			}
+			p, err := resolveSecret("basic_auth.password", b.Password, b.PasswordFile)
+			if err != nil {
+				return fmt.Errorf("scrape config %q: %w", sc.JobName, err)
+			}
+			b.Username, b.Password = u, p
+		}
+		if tc := sc.TLS; tc != nil {
+			for _, p := range []*string{&tc.CAFile, &tc.CertFile, &tc.KeyFile, &tc.ServerName} {
+				v, err := expandEnv(*p)
+				if err != nil {
+					return fmt.Errorf("scrape config %q: %w", sc.JobName, err)
+				}
+				*p = v
+			}
+		}
+	}
+	return nil
+}
+
+// resolveSecret returns the env-expanded inline value, or the trimmed contents of
+// the (env-expanded) file path when inline is empty.
+func resolveSecret(field, inline, file string) (string, error) {
+	if inline != "" {
+		v, err := expandEnv(inline)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", field, err)
+		}
+		return v, nil
+	}
+	if file == "" {
+		return "", nil
+	}
+	path, err := expandEnv(file)
+	if err != nil {
+		return "", fmt.Errorf("%s_file: %w", field, err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("%s_file: %w", field, err)
+	}
+	return strings.TrimSpace(string(b)), nil
 }
 
 func (c *Config) applyDefaults() {

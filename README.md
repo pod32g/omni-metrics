@@ -111,9 +111,10 @@ Secrets reach the scraper three ways, so they need never be committed:
 
 - **Inline** — a literal value (fine for non-secret fields).
 - **`${ENV}` expansion** — `${VAR}` or `${VAR:-default}` in any credential or
-  file-path field. A `${VAR}` that is referenced but unset (with no default) is a
+  file-path field. A `${VAR}` that is unset **or empty** (with no default) is a
   **load error** — the scraper fails loudly rather than authenticating with an
-  empty token.
+  empty token. `${VAR:-default}` falls back to the default when the variable is
+  unset or empty (shell `:-` semantics).
 - **`<field>_file`** — read the secret from a file (Docker secrets, mounted
   volumes). A field and its `_file` twin set together is a config error.
 

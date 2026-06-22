@@ -298,3 +298,21 @@ func TestTLSConfigBuild(t *testing.T) {
 		t.Errorf("expected error for missing ca_file")
 	}
 }
+
+func TestExpandEnvEmptyIsLoud(t *testing.T) {
+	t.Setenv("SET_EMPTY", "")
+	// ${VAR} with no default, set but empty → error (fail loud, matches the
+	// deploy path where docker-compose sets the var to "" when the secret is
+	// missing).
+	if _, err := expandEnv("${SET_EMPTY}"); err == nil {
+		t.Error("expected error for set-but-empty var with no default")
+	}
+	// ${VAR:-def} uses the default when the var is empty (shell ':-' semantics).
+	if got, err := expandEnv("${SET_EMPTY:-def}"); err != nil || got != "def" {
+		t.Errorf("expandEnv(${SET_EMPTY:-def}) = %q, %v; want def", got, err)
+	}
+	// Explicit empty default is allowed (operator opted in).
+	if got, err := expandEnv("${SET_EMPTY:-}"); err != nil || got != "" {
+		t.Errorf("expandEnv(${SET_EMPTY:-}) = %q, %v; want empty", got, err)
+	}
+}

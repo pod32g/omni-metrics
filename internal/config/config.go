@@ -20,15 +20,18 @@ import (
 // envRef matches ${VAR} or ${VAR:-default}.
 var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}`)
 
-// expandEnv replaces ${VAR} / ${VAR:-default} references. A reference to an unset
-// variable with no default is an error — fail loud rather than scrape with an
-// empty credential.
+// expandEnv replaces ${VAR} / ${VAR:-default} references. A variable that is
+// unset OR empty falls back to its default; ${VAR} with no default that resolves
+// empty is an error — fail loud rather than scrape with an empty credential.
+// (The deploy path matters: docker-compose's "${VAR:-}" sets the container var
+// to "" when a secret is missing, so erroring only on *unset* would silently
+// disable auth.) The empty-triggers-default rule matches shell ':-' semantics.
 func expandEnv(s string) (string, error) {
 	var bad string
 	out := envRef.ReplaceAllStringFunc(s, func(m string) string {
 		g := envRef.FindStringSubmatch(m)
 		name, hasDef, def := g[1], g[2] != "", g[3]
-		if v, ok := os.LookupEnv(name); ok {
+		if v := os.Getenv(name); v != "" {
 			return v
 		}
 		if hasDef {
@@ -38,7 +41,7 @@ func expandEnv(s string) (string, error) {
 		return ""
 	})
 	if bad != "" {
-		return "", fmt.Errorf("environment variable %q is not set", bad)
+		return "", fmt.Errorf("environment variable %q is not set or empty", bad)
 	}
 	return out, nil
 }

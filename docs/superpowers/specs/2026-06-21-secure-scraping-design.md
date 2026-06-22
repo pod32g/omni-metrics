@@ -69,8 +69,12 @@ scrape_configs:
 
 - **`${VAR}` expansion** applies to credential string fields and file-path
   fields at config load. Forms: `${VAR}` and `${VAR:-default}`. A `${VAR}`
-  referenced but **unset (and no default) is a load error** — fail loud rather
-  than silently scrape with an empty token.
+  referenced but **unset _or empty_ (and no default) is a load error** — fail
+  loud rather than silently scrape with an empty token. (Empty matters: the
+  deploy's `docker-compose` `${OMNI_IDENTITY_TOKEN:-}` sets the container var to
+  `""` when the secret is missing, so erroring only on *unset* would silently
+  disable auth.) `${VAR:-default}` falls back on unset-or-empty, matching shell
+  `:-`.
 - **`_file` resolution:** credential `_file` fields (bearer/basic_auth) are read
   once at load into concrete values. TLS `ca_file`/`cert_file`/`key_file` are
   read when the per-job HTTP client is built at startup.

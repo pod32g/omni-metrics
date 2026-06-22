@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/pod32g/omni-metrics/internal/config"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,5 +48,32 @@ func TestSelfScrapeTarget(t *testing.T) {
 		if got := selfScrapeTarget(in); got != want {
 			t.Errorf("selfScrapeTarget(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestToScrapeConfigsCarriesAuthAndTLS(t *testing.T) {
+	c, err := config.LoadBytes([]byte(`
+scrape_configs:
+  - job_name: id
+    scheme: https
+    authorization: {type: Bearer, credentials: tok}
+    tls_config: {insecure_skip_verify: true}
+    static_configs: [{targets: [id:8081]}]
+  - job_name: app
+    basic_auth: {username: u, password: p}
+    static_configs: [{targets: [app:9090]}]
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	got, err := toScrapeConfigs(c)
+	if err != nil {
+		t.Fatalf("toScrapeConfigs: %v", err)
+	}
+	if got[0].Scheme != "https" || got[0].Auth.Credentials != "tok" || got[0].TLS == nil || !got[0].TLS.InsecureSkipVerify {
+		t.Errorf("job id = %+v", got[0])
+	}
+	if got[1].Auth.BasicUser != "u" || got[1].Auth.BasicPass != "p" || !got[1].Auth.HasBasic {
+		t.Errorf("job app auth = %+v", got[1].Auth)
 	}
 }

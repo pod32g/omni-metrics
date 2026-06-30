@@ -19,6 +19,7 @@ import (
 
 	"github.com/pod32g/omni-metrics/internal/alerts"
 	"github.com/pod32g/omni-metrics/internal/alerts/models"
+	"github.com/pod32g/omni-metrics/internal/alerts/notify"
 	"github.com/pod32g/omni-metrics/internal/api"
 	"github.com/pod32g/omni-metrics/internal/config"
 	"github.com/pod32g/omni-metrics/internal/logship"
@@ -127,6 +128,7 @@ func main() {
 			Datasources:       dss,
 			DefaultDatasource: defaultDS,
 			Now:               time.Now,
+			Notify:            buildNotifyConfig(cfg),
 		})
 		if err != nil {
 			log.Fatalf("alerting: %v", err)
@@ -278,6 +280,27 @@ func buildAlertDatasources(cfg *config.Config) ([]models.Datasource, string) {
 		out = append([]models.Datasource{builtinLocalDatasource(cfg.Web.Listen)}, out...)
 	}
 	return out, defaultName
+}
+
+// buildNotifyConfig maps the config notify block to the engine's notifier
+// config. MaxRetries is a *int in config so an explicit 0 is meaningful; it is
+// non-nil once defaults are applied for an enabled block, but deref defensively.
+func buildNotifyConfig(cfg *config.Config) notify.Config {
+	n := cfg.Alerting.Notify
+	retries := config.DefaultNotifyMaxRetries
+	if n.MaxRetries != nil {
+		retries = *n.MaxRetries
+	}
+	return notify.Config{
+		Enabled:     n.IsEnabled(),
+		URL:         n.URL,
+		Token:       n.Token,
+		Source:      n.Source,
+		MinSeverity: n.MinSeverity,
+		Timeout:     time.Duration(n.Timeout),
+		QueueSize:   n.QueueSize,
+		MaxRetries:  retries,
+	}
 }
 
 func builtinLocalDatasource(listen string) models.Datasource {

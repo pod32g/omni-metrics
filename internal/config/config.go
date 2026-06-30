@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -67,10 +68,37 @@ type AlertingConfig struct {
 	StoragePath       string                  `yaml:"storage_path"`
 	DefaultDatasource string                  `yaml:"default_datasource"`
 	Datasources       []AlertDatasourceConfig `yaml:"datasources"`
+	Notify            NotifyConfig            `yaml:"notify"`
 }
 
 // IsEnabled reports whether the alerting engine should run (default true).
 func (a AlertingConfig) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
+
+// NotifyConfig forwards firing/resolved alert transitions to omni-notify. Unlike
+// the engine itself, it is opt-in: an omitted block (Enabled nil) is disabled.
+type NotifyConfig struct {
+	Enabled     *bool    `yaml:"enabled"`
+	URL         string   `yaml:"url"`
+	Token       string   `yaml:"token"`
+	Source      string   `yaml:"source"`
+	MinSeverity string   `yaml:"min_severity"`
+	Timeout     Duration `yaml:"timeout"`
+	QueueSize   int      `yaml:"queue_size"`
+	// MaxRetries is a *int so an explicit 0 (no retry) is distinguishable from
+	// unset (defaults to DefaultNotifyMaxRetries).
+	MaxRetries *int `yaml:"max_retries"`
+}
+
+// IsEnabled reports whether outbound notification is on (default false).
+func (n NotifyConfig) IsEnabled() bool { return n.Enabled != nil && *n.Enabled }
+
+// Notify defaults.
+const (
+	DefaultNotifyTimeout    = 5 * time.Second
+	DefaultNotifyQueueSize  = 1024
+	DefaultNotifyMaxRetries = 3
+	defaultNotifySource     = "omni-metrics"
+)
 
 // AlertDatasourceConfig is one config-defined alert datasource. It reuses the
 // scrape auth shapes (Authorization / BasicAuth) for credential resolution.
@@ -299,6 +327,13 @@ func (c *Config) resolveSecrets() error {
 			b.Username, b.Password = u, p
 		}
 	}
+	if n := &c.Alerting.Notify; n.IsEnabled() && n.Token != "" {
+		v, err := expandEnv(n.Token)
+		if err != nil {
+			return fmt.Errorf("alerting notify token: %w", err)
+		}
+		n.Token = v
+	}
 	return nil
 }
 
@@ -361,6 +396,21 @@ func (c *Config) applyDefaults() {
 		}
 		if ds.Timeout == 0 {
 			ds.Timeout = Duration(DefaultAlertDatasourceTimeout)
+		}
+	}
+	if n := &c.Alerting.Notify; n.IsEnabled() {
+		if n.Source == "" {
+			n.Source = defaultNotifySource
+		}
+		if n.Timeout == 0 {
+			n.Timeout = Duration(DefaultNotifyTimeout)
+		}
+		if n.QueueSize == 0 {
+			n.QueueSize = DefaultNotifyQueueSize
+		}
+		if n.MaxRetries == nil {
+			d := DefaultNotifyMaxRetries
+			n.MaxRetries = &d
 		}
 	}
 }
@@ -428,6 +478,35 @@ func (c *Config) validateAlerting() error {
 	}
 	if d := c.Alerting.DefaultDatasource; d != "" && len(c.Alerting.Datasources) > 0 && !seen[d] {
 		return fmt.Errorf("alerting: default_datasource %q is not a configured datasource", d)
+	}
+	if err := c.Alerting.Notify.validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validate checks an enabled notify block. URL and token are required; the URL
+// must be http(s) with a host; min_severity, if set, must be a known level. The
+// token is validated only for presence here — its ${VAR} expansion (and
+// fail-loud-on-unset behavior) happens later in resolveSecrets.
+func (n NotifyConfig) validate() error {
+	if !n.IsEnabled() {
+		return nil
+	}
+	if n.URL == "" {
+		return fmt.Errorf("alerting notify: url is required when enabled")
+	}
+	u, err := url.Parse(n.URL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("alerting notify: url %q must be an http(s) URL with a host", n.URL)
+	}
+	if n.Token == "" {
+		return fmt.Errorf("alerting notify: token is required when enabled")
+	}
+	switch n.MinSeverity {
+	case "", "critical", "error", "warning", "info", "debug":
+	default:
+		return fmt.Errorf("alerting notify: min_severity %q must be one of critical|error|warning|info|debug", n.MinSeverity)
 	}
 	return nil
 }

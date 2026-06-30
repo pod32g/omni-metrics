@@ -19,6 +19,7 @@ import (
 	"github.com/pod32g/omni-metrics/internal/alerts/evaluator"
 	"github.com/pod32g/omni-metrics/internal/alerts/metrics"
 	"github.com/pod32g/omni-metrics/internal/alerts/models"
+	"github.com/pod32g/omni-metrics/internal/alerts/notify"
 	"github.com/pod32g/omni-metrics/internal/alerts/scheduler"
 	"github.com/pod32g/omni-metrics/internal/alerts/storage"
 )
@@ -42,6 +43,9 @@ type Options struct {
 	Interval scheduler.IntervalFunc
 	// Logger receives structured engine logs (nil = the standard logger).
 	Logger *log.Logger
+	// Notify configures outbound forwarding of firing/resolved transitions to
+	// omni-notify. Disabled (the zero value) builds no dispatcher.
+	Notify notify.Config
 }
 
 // Service is the running alerting engine.
@@ -50,6 +54,7 @@ type Service struct {
 	eval        *evaluator.Evaluator
 	sched       *scheduler.Scheduler
 	metrics     *metrics.Metrics
+	notifier    *notify.Dispatcher
 	handler     http.Handler
 	now         func() time.Time
 	logger      *log.Logger
@@ -77,6 +82,10 @@ func NewService(opts Options) (*Service, error) {
 	s.eval = evaluator.New(store, func(ds models.Datasource) datasource.Datasource {
 		return datasource.New(ds)
 	}, opts.MaxInstances, opts.Now)
+
+	if opts.Notify.Enabled {
+		s.notifier = notify.NewDispatcher(opts.Notify, notify.NewClient(opts.Notify))
+	}
 
 	if err := s.seedDatasources(context.Background(), opts.Datasources, opts.DefaultDatasource); err != nil {
 		store.Close()
@@ -109,21 +118,24 @@ func (s *Service) Collector() func(io.Writer) {
 	return func(w io.Writer) {
 		s.refreshGauges(context.Background())
 		s.metrics.WriteExposition(w)
+		s.notifier.WriteExposition(w) // nil-safe no-op when notify is disabled
 	}
 }
 
 // Start loads rules, schedules the enabled ones, and begins evaluating.
 func (s *Service) Start(ctx context.Context) {
+	s.notifier.Start(ctx) // nil-safe no-op when notify is disabled
 	s.sched.Start(ctx)
 	s.reconcile()
 	s.refreshGauges(ctx)
 }
 
-// Stop halts the scheduler and closes the store.
+// Stop halts the scheduler, drains the notifier, and closes the store.
 func (s *Service) Stop() {
 	if s.sched != nil {
 		s.sched.Stop()
 	}
+	s.notifier.Stop() // nil-safe; drains best-effort
 	if s.store != nil {
 		s.store.Close()
 	}
@@ -196,8 +208,41 @@ func (s *Service) evaluate(ctx context.Context, ruleID string) (api.EvalResult, 
 	if out.Transitions > 0 {
 		s.logf("alert_state rule=%q transitions=%d active=%d pending=%d", rule.Name, out.Transitions, out.Active, out.Pending)
 	}
+	s.forwardNotifications(out.Changes)
 	s.refreshGauges(ctx)
 	return api.EvalResult{Active: out.Active, Pending: out.Pending, Transitions: out.Transitions}, nil
+}
+
+// forwardNotifications enqueues the firing and resolved transitions to the
+// notifier. Pending transitions are intentionally not forwarded. The enqueue is
+// non-blocking, so this never stalls evaluation.
+func (s *Service) forwardNotifications(changes []evaluator.Transition) {
+	if s.notifier == nil {
+		return
+	}
+	for _, c := range changes {
+		switch c.New {
+		case models.StateFiring:
+			s.notifier.Enqueue(toNotification("firing", c))
+		case models.StateResolved:
+			s.notifier.Enqueue(toNotification("resolved", c))
+		}
+	}
+}
+
+// toNotification maps an evaluator transition to an outbound notification.
+func toNotification(status string, c evaluator.Transition) notify.Notification {
+	return notify.Notification{
+		RuleID:      c.RuleID,
+		RuleName:    c.RuleName,
+		Fingerprint: c.Fingerprint,
+		Status:      status,
+		Severity:    c.Severity,
+		Value:       c.Value,
+		Labels:      c.Labels,
+		Annotations: c.Annotations,
+		Time:        c.Time,
+	}
 }
 
 // evaluateAll evaluates every enabled rule synchronously.

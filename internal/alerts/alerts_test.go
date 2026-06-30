@@ -12,6 +12,7 @@ import (
 
 	"github.com/pod32g/omni-metrics/internal/alerts"
 	"github.com/pod32g/omni-metrics/internal/alerts/models"
+	"github.com/pod32g/omni-metrics/internal/alerts/notify"
 )
 
 func promServer(t *testing.T, fire bool) *httptest.Server {
@@ -143,6 +144,96 @@ func TestServiceResolvesWhenConditionClears(t *testing.T) {
 	json.Unmarshal(req(t, h, "GET", "/api/v1/alerts/active", "").Body.Bytes(), &active)
 	if len(active.Data) != 0 {
 		t.Fatalf("alert not resolved: %+v", active.Data)
+	}
+}
+
+func TestServiceForwardsFiringToNotify(t *testing.T) {
+	type recv struct {
+		auth  string
+		event map[string]any
+	}
+	received := make(chan recv, 4)
+	notifySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ev map[string]any
+		json.NewDecoder(r.Body).Decode(&ev)
+		received <- recv{auth: r.Header.Get("Authorization"), event: ev}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer notifySrv.Close()
+
+	prom := promServer(t, true)
+	defer prom.Close()
+
+	svc, err := alerts.NewService(alerts.Options{
+		StorePath: ":memory:",
+		Datasources: []models.Datasource{
+			{ID: "local", Name: "local", Type: "prometheus", BaseURL: prom.URL, AuthType: models.AuthNone, Enabled: true, Source: models.SourceBuiltin, TimeoutMS: 2000},
+		},
+		DefaultDatasource: "local",
+		Now:               time.Now,
+		Notify:            notify.Config{Enabled: true, URL: notifySrv.URL, Token: "tok"},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	svc.Start(context.Background())
+	defer svc.Stop()
+	h := svc.Handler()
+
+	req(t, h, "POST", "/api/v1/alerts", `{"name":"always","promql":"vector(1)","evaluation_interval_seconds":15,"for_duration_seconds":0,"severity":"critical"}`)
+	req(t, h, "POST", "/api/v1/alerts/evaluate", "")
+
+	select {
+	case got := <-received:
+		if got.auth != "Bearer tok" {
+			t.Errorf("auth = %q, want Bearer tok", got.auth)
+		}
+		ev := got.event
+		if ev["status"] != "firing" {
+			t.Errorf("status = %v, want firing", ev["status"])
+		}
+		if ev["source"] != "omni-metrics" {
+			t.Errorf("source = %v, want omni-metrics", ev["source"])
+		}
+		if ev["severity"] != "critical" {
+			t.Errorf("severity = %v, want critical", ev["severity"])
+		}
+		if ev["title"] != "always" {
+			t.Errorf("title = %v, want always", ev["title"])
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("omni-notify received no event")
+	}
+
+	var b strings.Builder
+	svc.Collector()(&b)
+	if !strings.Contains(b.String(), "omni_alerts_notify_sent_total") {
+		t.Errorf("collector missing notify metrics:\n%s", b.String())
+	}
+}
+
+func TestServiceNotifyDisabledSendsNothing(t *testing.T) {
+	var hits int32
+	notifySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer notifySrv.Close()
+
+	prom := promServer(t, true)
+	defer prom.Close()
+
+	// No Notify config -> disabled -> no dispatcher, no enqueues ever.
+	svc := newService(t, prom.URL)
+	svc.Start(context.Background())
+	defer svc.Stop()
+	h := svc.Handler()
+
+	req(t, h, "POST", "/api/v1/alerts", `{"name":"x","promql":"vector(1)","for_duration_seconds":0,"severity":"critical"}`)
+	req(t, h, "POST", "/api/v1/alerts/evaluate", "")
+
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Errorf("omni-notify hit %d times with notify disabled, want 0", n)
 	}
 }
 

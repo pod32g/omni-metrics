@@ -46,11 +46,30 @@ func New(store storage.Store, resolve func(models.Datasource) datasource.Datasou
 
 // Outcome summarizes a single evaluation.
 type Outcome struct {
-	Active      int    // instances now FIRING
-	Pending     int    // instances now PENDING
-	Transitions int    // state transitions persisted this evaluation
-	Err         error  // non-nil if the query failed (state was held, not resolved)
-	FailReason  string // classification when Err != nil or the instance cap tripped
+	Active      int          // instances now FIRING
+	Pending     int          // instances now PENDING
+	Transitions int          // state transitions persisted this evaluation
+	Changes     []Transition // the transitions persisted this evaluation (len == Transitions)
+	Err         error        // non-nil if the query failed (state was held, not resolved)
+	FailReason  string       // classification when Err != nil or the instance cap tripped
+}
+
+// Transition is a single persisted state change surfaced to the caller so it can
+// forward firing/resolved transitions to a notifier without re-reading the
+// store. It carries the rule context and the instance's merged labels and
+// annotations (which are gone from the store once a resolved instance is
+// deleted).
+type Transition struct {
+	RuleID      string
+	RuleName    string
+	Severity    string
+	Fingerprint string
+	Prev        models.State
+	New         models.State
+	Value       float64
+	Labels      map[string]string
+	Annotations map[string]string
+	Time        time.Time
 }
 
 // EvaluateRule queries the rule's datasource, advances state for each result
@@ -120,6 +139,18 @@ func (e *Evaluator) EvaluateRule(ctx context.Context, rule models.Rule, dsCfg mo
 		if changed {
 			e.record(ctx, rule.ID, fp, curState, next, now, sample.Value, transitionReason(curState, next))
 			out.Transitions++
+			out.Changes = append(out.Changes, Transition{
+				RuleID:      rule.ID,
+				RuleName:    rule.Name,
+				Severity:    string(rule.Severity),
+				Fingerprint: fp,
+				Prev:        curState,
+				New:         next,
+				Value:       sample.Value,
+				Labels:      in.Labels,
+				Annotations: in.Annotations,
+				Time:        now,
+			})
 		}
 		switch next {
 		case models.StateFiring:
@@ -138,6 +169,18 @@ func (e *Evaluator) EvaluateRule(ctx context.Context, rule models.Rule, dsCfg mo
 		if changed {
 			e.record(ctx, rule.ID, in.Fingerprint, in.State, next, now, 0, "condition no longer true")
 			out.Transitions++
+			out.Changes = append(out.Changes, Transition{
+				RuleID:      rule.ID,
+				RuleName:    rule.Name,
+				Severity:    string(rule.Severity),
+				Fingerprint: in.Fingerprint,
+				Prev:        in.State,
+				New:         next,
+				Value:       0,
+				Labels:      in.Labels,
+				Annotations: in.Annotations,
+				Time:        now,
+			})
 		}
 		// A resolved instance leaves the active set; its transition lives in history.
 		if err := e.store.DeleteInstance(ctx, in.ID); err != nil {

@@ -135,6 +135,61 @@ func TestEvaluateResolveWhenSeriesDisappears(t *testing.T) {
 	}
 }
 
+func TestEvaluateSurfacesFiringChange(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	now := time.Unix(1000, 0).UTC()
+	ds := &fakeDS{res: vec(models.Sample{Labels: map[string]string{"instance": "a"}, Value: 7})}
+	rule := models.Rule{
+		ID: "r1", Name: "High CPU", PromQL: "x", ForS: 0, Severity: "critical",
+		Labels:      map[string]string{"team": "x"},
+		Annotations: map[string]string{"summary": "hot"},
+	}
+
+	out := evalWith(t, st, ds, 1000, now).EvaluateRule(ctx, rule, models.Datasource{})
+	if len(out.Changes) != 1 {
+		t.Fatalf("changes = %d, want 1", len(out.Changes))
+	}
+	c := out.Changes[0]
+	if c.New != models.StateFiring {
+		t.Errorf("New = %v, want firing", c.New)
+	}
+	if c.RuleID != "r1" || c.RuleName != "High CPU" || c.Severity != "critical" {
+		t.Errorf("rule context wrong: %+v", c)
+	}
+	if c.Value != 7 || c.Fingerprint == "" {
+		t.Errorf("value/fingerprint wrong: %+v", c)
+	}
+	if c.Labels["instance"] != "a" || c.Labels["team"] != "x" {
+		t.Errorf("merged labels wrong: %+v", c.Labels)
+	}
+	if c.Annotations["summary"] != "hot" {
+		t.Errorf("annotations wrong: %+v", c.Annotations)
+	}
+	if !c.Time.Equal(now) {
+		t.Errorf("Time = %v, want %v", c.Time, now)
+	}
+}
+
+func TestEvaluateSurfacesResolvedChange(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	now := time.Unix(1000, 0).UTC()
+	ds := &fakeDS{res: vec(models.Sample{Labels: map[string]string{"instance": "a"}, Value: 1})}
+	rule := models.Rule{ID: "r1", Name: "R", PromQL: "x", ForS: 0, Severity: "warning"}
+	e := evalWith(t, st, ds, 1000, now)
+	e.EvaluateRule(ctx, rule, models.Datasource{}) // FIRING
+
+	ds.res = vec() // series disappears
+	out := e.EvaluateRule(ctx, rule, models.Datasource{})
+	if len(out.Changes) != 1 {
+		t.Fatalf("changes = %d, want 1", len(out.Changes))
+	}
+	if out.Changes[0].New != models.StateResolved {
+		t.Errorf("New = %v, want resolved", out.Changes[0].New)
+	}
+}
+
 func TestEvaluateForDuration(t *testing.T) {
 	ctx := context.Background()
 	st := newStore(t)

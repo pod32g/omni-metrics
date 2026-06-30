@@ -58,8 +58,9 @@ push:
 
 # Alerting engine: evaluates PromQL alert rules against Prometheus-compatible
 # datasources, runs the OK->PENDING->FIRING->RESOLVED state machine, and persists
-# rules/state/history to a SQLite database. It does NOT send notifications —
-# delivery is a separate concern (Omni-Notify) that consumes the events feed.
+# rules/state/history to a SQLite database. Notification *delivery* (routing,
+# escalation, channels) lives in a separate service, omni-notify; the optional
+# `notify:` block below forwards firing/resolved transitions to it.
 alerting:
   enabled: true                       # default true; set false to disable entirely
   # SQLite database path. Defaults to <storage.path>/alerts.db, or in-memory when
@@ -67,6 +68,18 @@ alerting:
   storage_path: ""
   # Datasource applied to rules that omit one. Defaults to the builtin "local".
   default_datasource: local
+  # Forward firing/resolved alerts to omni-notify (https://github.com/pod32g/omni-notify).
+  # Opt-in: disabled unless enabled: true. POSTs each transition to <url>/api/v1/events
+  # with a bearer token. Best-effort delivery (in-memory queue + bounded retry).
+  # notify:
+  #   enabled: true
+  #   url: http://omni-notify:8088        # omni-notify base URL
+  #   token: ${OMNI_NOTIFY_TOKEN}         # bearer; via ${ENV}, never committed
+  #   source: omni-metrics                # event "source" label (default omni-metrics)
+  #   min_severity: ""                    # "" forwards all; or critical|error|warning|info|debug
+  #   timeout: 5s                         # per-request HTTP timeout
+  #   queue_size: 1024                    # in-memory buffer; a full buffer drops events
+  #   max_retries: 3                      # retries after the first attempt (0 = none)
   datasources:
     # A builtin "local" datasource pointing at this server is auto-registered, so
     # this block is optional. Define one named "local" here to override its URL.

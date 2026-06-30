@@ -22,6 +22,10 @@ services:
       # omni-identity /metrics bearer token (secret → host env / CI secret),
       # referenced as ${OMNI_IDENTITY_TOKEN} by the omni-identity scrape job.
       OMNI_IDENTITY_TOKEN: ${OMNI_IDENTITY_TOKEN:-}
+      # omni-notify API bearer token (secret → host .env / CI secret), referenced
+      # as ${OMNI_NOTIFY_TOKEN} by the alerting.notify block. Required when notify
+      # is enabled: a no-default ${VAR} that resolves empty fails config load.
+      OMNI_NOTIFY_TOKEN: ${OMNI_NOTIFY_TOKEN:-}
     ports:
       - "9090:9090"
     volumes:

@@ -176,10 +176,13 @@ Make sure omni is reachable from Grafana: bind a routable address with
 ## Alerting
 
 A built-in, provider-agnostic alerting engine evaluates PromQL alert rules,
-manages alert state, and persists history. It **detects and tracks** alerts — it
-does **not** send notifications. Delivery (Discord/Slack/Email/Telegram/Webhooks),
-routing, escalation, and silences belong to a separate service (Omni-Notify),
-which consumes the events feed below.
+manages alert state, and persists history. It **detects and tracks** alerts;
+notification **delivery** (Discord/Slack/Email/Telegram/Webhooks), routing,
+escalation, and silences belong to a separate service,
+[omni-notify](https://github.com/pod32g/omni-notify). The optional
+[`notify:` block](#notifications-omni-notify) forwards firing/resolved
+transitions to it, and the events feed below is also available for pull-based
+consumers.
 
 - **Datasources** — rules evaluate against any Prometheus-compatible HTTP API.
   A builtin `local` datasource points at omni itself; add more in the `alerting:`
@@ -219,6 +222,40 @@ shows active alerts and history, and edits datasources. Engine metrics
 are exposed at `/metrics`. Rules, state, and history persist to a SQLite database
 (`<storage.path>/alerts.db` by default); **history is append-only and never
 auto-deleted**. Configure via the `alerting:` block — see `examples/omni.yml`.
+
+### Notifications (omni-notify)
+
+When the `alerting.notify` block is enabled, every **firing** and **resolved**
+transition is forwarded to [omni-notify](https://github.com/pod32g/omni-notify),
+which handles routing and delivery to channels. omni-metrics POSTs one event per
+transition to `<url>/api/v1/events` with a bearer token, mapping the alert to
+omni-notify's event schema (`type: "alert"`, `status: firing|resolved`, the
+rule's severity/labels/annotations, and a stable `fingerprint` of `<rule>:<series>`
+so a firing and its later resolve correlate). `pending` transitions are not sent.
+
+Delivery is **best-effort**: transitions are queued in memory and sent by a
+background worker with bounded retry (4xx are dropped, 5xx/transport errors are
+retried). A full queue drops events rather than blocking evaluation; the SQLite
+alert history remains the durable record. Forwarding is **opt-in** (`enabled`
+defaults to false).
+
+```yaml
+alerting:
+  notify:
+    enabled: true
+    url: http://omni-notify:8088     # omni-notify base URL
+    token: ${OMNI_NOTIFY_TOKEN}      # bearer; via ${ENV}, never committed
+    source: omni-metrics             # event "source" label (default)
+    min_severity: ""                 # "" = all; or critical|error|warning|info|debug
+    timeout: 5s                      # per-request HTTP timeout
+    queue_size: 1024                 # in-memory buffer
+    max_retries: 3                   # retries after the first attempt (0 = none)
+```
+
+Forwarding self-metrics at `/metrics`: `omni_alerts_notify_sent_total`,
+`omni_alerts_notify_failed_total{reason}`, `omni_alerts_notify_dropped_total{reason}`,
+`omni_alerts_notify_filtered_total`, `omni_alerts_notify_retries_total`,
+`omni_alerts_notify_queue_depth`.
 
 ## Architecture
 

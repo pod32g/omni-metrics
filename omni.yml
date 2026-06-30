@@ -27,3 +27,14 @@ scrape_configs:
       credentials: ${OMNI_IDENTITY_TOKEN}
     static_configs:
       - targets: [192.168.68.34:8081]
+
+# Alerting: the engine runs with defaults (builtin "local" datasource). Forward
+# firing/resolved transitions to omni-notify — a separate compose project reached
+# via the host's published port (8088 -> container 8080). The bearer token comes
+# from OMNI_NOTIFY_TOKEN (host env / CI secret), never committed. Same-host hop,
+# so plain http is acceptable.
+alerting:
+  notify:
+    enabled: true
+    url: http://192.168.68.34:8088
+    token: ${OMNI_NOTIFY_TOKEN}

@@ -164,6 +164,18 @@ func TestDispatcherDropsWhenQueueFull(t *testing.T) {
 	}
 }
 
+func TestDispatcherQueueDepthGaugeUpdatesOnEnqueue(t *testing.T) {
+	f := &fakeSender{}
+	// No Start: enqueues buffer without draining, so the gauge reflects fill.
+	d := newTestDispatcher(Config{QueueSize: 8}, f)
+	d.Enqueue(Notification{Status: "firing", Severity: "warning"})
+	d.Enqueue(Notification{Status: "firing", Severity: "warning"})
+	d.Enqueue(Notification{Status: "firing", Severity: "warning"})
+	if !strings.Contains(exposition(d), "omni_alerts_notify_queue_depth 3") {
+		t.Errorf("want queue_depth 3 in:\n%s", exposition(d))
+	}
+}
+
 func TestDispatcherEnqueueAfterStopIsNoop(t *testing.T) {
 	f := &fakeSender{}
 	d := newTestDispatcher(Config{}, f)

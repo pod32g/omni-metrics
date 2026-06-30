@@ -72,6 +72,7 @@ func (d *Dispatcher) Enqueue(n Notification) {
 	}
 	select {
 	case d.ch <- n:
+		d.metrics.setQueueDepth(len(d.ch))
 	default:
 		d.metrics.incDropped("queue_full")
 	}

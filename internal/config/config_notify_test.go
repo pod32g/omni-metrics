@@ -64,6 +64,7 @@ func TestNotifyValidationErrors(t *testing.T) {
 		{"missing token", "alerting:\n  notify:\n    enabled: true\n    url: http://x:8088\n"},
 		{"bad min_severity", "alerting:\n  notify:\n    enabled: true\n    url: http://x:8088\n    token: t\n    min_severity: high\n"},
 		{"bad url scheme", "alerting:\n  notify:\n    enabled: true\n    url: ftp://x\n    token: t\n"},
+		{"url with userinfo", "alerting:\n  notify:\n    enabled: true\n    url: http://user:pass@x:8088\n    token: t\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

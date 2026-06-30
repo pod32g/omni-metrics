@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -98,9 +99,23 @@ func (c *Client) Send(ctx context.Context, n Notification) error {
 // toEvent maps a Notification to the omni-notify event schema.
 func (c *Client) toEvent(n Notification) event {
 	id := n.RuleID + ":" + n.Fingerprint
-	summary := n.Annotations["summary"]
+	annotations := n.Annotations
+	summary := annotations["summary"]
 	if summary == "" {
 		summary = n.RuleName
+	}
+	// Surface the triggering sample value as an annotation on firing events (a
+	// resolved transition has no meaningful value). A user-supplied "value"
+	// annotation wins.
+	if n.Status == "firing" {
+		if _, ok := annotations["value"]; !ok {
+			merged := make(map[string]string, len(annotations)+1)
+			for k, v := range annotations {
+				merged[k] = v
+			}
+			merged["value"] = strconv.FormatFloat(n.Value, 'g', -1, 64)
+			annotations = merged
+		}
 	}
 	return event{
 		EventID:     id,
@@ -114,6 +129,6 @@ func (c *Client) toEvent(n Notification) event {
 		Description: n.Annotations["description"],
 		Timestamp:   n.Time.UTC().Format(time.RFC3339),
 		Labels:      n.Labels,
-		Annotations: n.Annotations,
+		Annotations: annotations,
 	}
 }

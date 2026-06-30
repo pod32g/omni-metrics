@@ -109,6 +109,69 @@ func TestClientSummaryFallsBackToTitle(t *testing.T) {
 	}
 }
 
+func TestClientFiringIncludesValueAnnotation(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{URL: srv.URL, Token: "t"})
+	if err := c.Send(context.Background(), testNotification()); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	ann, _ := body["annotations"].(map[string]any)
+	if ann["value"] != "0.97" {
+		t.Errorf("firing annotations[value] = %v, want 0.97", ann["value"])
+	}
+}
+
+func TestClientResolvedOmitsValueAnnotation(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	n := testNotification()
+	n.Status = "resolved"
+	n.Value = 0
+	n.Annotations = nil
+	c := NewClient(Config{URL: srv.URL, Token: "t"})
+	if err := c.Send(context.Background(), n); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	ann, _ := body["annotations"].(map[string]any)
+	if _, ok := ann["value"]; ok {
+		t.Errorf("resolved event should not carry a value annotation, got %v", ann["value"])
+	}
+}
+
+func TestClientPreservesUserValueAnnotation(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	n := testNotification()
+	n.Annotations = map[string]string{"value": "custom"}
+	c := NewClient(Config{URL: srv.URL, Token: "t"})
+	if err := c.Send(context.Background(), n); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	ann, _ := body["annotations"].(map[string]any)
+	if ann["value"] != "custom" {
+		t.Errorf("user annotation overwritten: value = %v, want custom", ann["value"])
+	}
+}
+
 func TestClientSend4xxIsPermanent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad token", http.StatusUnauthorized)

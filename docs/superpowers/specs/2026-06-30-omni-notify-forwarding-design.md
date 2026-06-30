@@ -69,11 +69,14 @@ history — the inline seam produces richer events with less machinery.
   dispatcher (feature disabled) is a no-op everywhere it is used.
 - **Metrics** (own `WriteExposition`, folded into the engine's `/metrics`):
   - `omni_alerts_notify_sent_total` (counter)
-  - `omni_alerts_notify_failed_total{reason}` — `http_4xx|http_5xx|transport|giveup`
+  - `omni_alerts_notify_failed_total{reason}` — `permanent` (4xx), `giveup`
+    (retryable failure after exhausting `MaxRetries`), `canceled` (aborted on
+    shutdown)
   - `omni_alerts_notify_dropped_total{reason}` — `queue_full`
   - `omni_alerts_notify_filtered_total` — below min-severity
   - `omni_alerts_notify_retries_total`
-  - `omni_alerts_notify_queue_depth` (gauge)
+  - `omni_alerts_notify_queue_depth` (gauge) — refreshed on both enqueue and
+    dequeue
 
 ### Event mapping
 
@@ -96,6 +99,9 @@ history — the inline seam produces richer events with less machinery.
 
 - `firing` and `resolved` for the same series share `fingerprint`, so omni-notify
   correlates the lifecycle and auto-resolves.
+- The triggering sample value is added to `annotations.value` on `firing` events
+  (a resolved transition has no meaningful value); a user-supplied `value`
+  annotation is preserved.
 - **Severity mapping:** omni-notify accepts `critical|error|warning|info|debug`.
   The rule severity is lowercased and passed through if in that set; anything
   unknown/empty maps to `warning`.
@@ -136,9 +142,9 @@ alerting:
 ```
 
 - `Enabled *bool`, defaults **false** (opt-in).
-- Validation when enabled: `url` required and parseable (http/https, host);
-  `token` required; `min_severity` empty or a known level. Defaults applied for
-  source/timeout/queue_size/max_retries.
+- Validation when enabled: `url` required and parseable (http/https, host, no
+  embedded userinfo); `token` required; `min_severity` empty or a known level.
+  Defaults applied for source/timeout/queue_size/max_retries.
 - `token` flows through the existing `expandEnv` (a no-default `${VAR}` that is
   unset/empty is a fail-loud config error, per secure-scraping precedent).
 

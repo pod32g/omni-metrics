@@ -500,6 +500,9 @@ func (n NotifyConfig) validate() error {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("alerting notify: url %q must be an http(s) URL with a host", n.URL)
 	}
+	if u.User != nil {
+		return fmt.Errorf("alerting notify: url must not embed userinfo; use token for authentication")
+	}
 	if n.Token == "" {
 		return fmt.Errorf("alerting notify: token is required when enabled")
 	}

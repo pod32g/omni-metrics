@@ -76,7 +76,9 @@ jobs:
 
           # stop-first, then recreate: old and new must never hold the WAL at once.
           docker compose stop "$SVC" 2>/dev/null || true
-          docker compose up --build -d "$SVC"
+          # Bring up the whole project (app + netviz-sidecar), not just $SVC:
+          # the sidecar now owns the published port, so it must start too.
+          docker compose up --build -d
 
           # wait for readiness (probe from inside; distroless binary self-checks).
           ok=""

@@ -28,6 +28,14 @@ scrape_configs:
     static_configs:
       - targets: [192.168.68.34:8081]
 
+  # omni-bugtracker — another compose project on this host (8092 -> container 8080).
+  # Its /metrics needs no credentials: it exposes only HTTP request counters and
+  # latency histograms, no issue content, and the endpoint was already reachable on
+  # the LAN before this job existed. Same-host hop, so plain http is fine.
+  - job_name: omni-bugtracker
+    static_configs:
+      - targets: [192.168.68.34:8092]
+
 # Alerting: the engine runs with defaults (builtin "local" datasource). Forward
 # firing/resolved transitions to omni-notify — a separate compose project reached
 # via the host's published port (8088 -> container 8080). The bearer token comes

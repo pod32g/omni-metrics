@@ -36,6 +36,17 @@ scrape_configs:
     static_configs:
       - targets: [192.168.68.34:8092]
 
+  # omni-gateway - the forward proxy on this host (9091 -> container 9090). Its
+  # admin listener carries /-/reload, which can replace the running policy, so
+  # it is bearer-protected; the gateway refuses to start on a non-loopback bind
+  # without a token. The value comes from OMNI_GATEWAY_ADMIN_TOKEN (host .env /
+  # CI secret), never committed. Same-host hop, so plain http is fine.
+  - job_name: omni-gateway
+    authorization:
+      credentials: ${OMNI_GATEWAY_ADMIN_TOKEN}
+    static_configs:
+      - targets: [192.168.68.34:9091]
+
 # Alerting: the engine runs with defaults (builtin "local" datasource). Forward
 # firing/resolved transitions to omni-notify — a separate compose project reached
 # via the host's published port (8088 -> container 8080). The bearer token comes

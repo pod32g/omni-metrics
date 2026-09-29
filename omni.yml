@@ -47,6 +47,23 @@ scrape_configs:
     static_configs:
       - targets: [192.168.68.34:9091]
 
+  # omni-artifactory - the artifact service's control plane (/metrics, incl.
+  # the Pulp health it exports) and zot's native registry metrics, which the app
+  # relays at /metrics/zot. The app joins omni-metrics_default, so the target is
+  # its container name; it is in NO_PROXY above, so the scrape is direct (no
+  # NetViz sidecar). Bearer from OMNI_ARTIFACTORY_METRICS_TOKEN (host .env),
+  # never committed.
+  - job_name: omni-artifactory
+    authorization:
+      credentials: ${OMNI_ARTIFACTORY_METRICS_TOKEN}
+    static_configs:
+      - targets: [omni-artifactory:9102]
+  - job_name: omni-artifactory-zot
+    authorization:
+      credentials: ${OMNI_ARTIFACTORY_METRICS_TOKEN}
+    static_configs:
+      - targets: [http://omni-artifactory:9102/metrics/zot]
+
 # Alerting: the engine runs with defaults (builtin "local" datasource). Forward
 # firing/resolved transitions to omni-notify — a separate compose project reached
 # via the host's published port (8088 -> container 8080). The bearer token comes
